@@ -42,6 +42,32 @@ cargo run --release -- entrenar-nn      # guarda modelos/naturalidad.nng
 cargo run --release -- evolucionar --naturalidad modelos/naturalidad.nng
 ```
 
+## Agente de aprendizaje por refuerzo (A2C)
+
+Un agente actor-crítico aprende a jugar los niveles con las mismas acciones que
+el verificador (caminar, escaleras y los 27 arcos de salto). Su pérdida de
+política es la cross-entropy de la acción tomada ponderada por la ventaja. Se
+entrena con niveles nuevos en cada episodio (ventanas mutadas de niveles del
+GA y niveles aleatorios) y un currículo de longitud creciente. Sirve como
+probador: su tasa de victorias mide la dificultad empírica de un nivel.
+
+```sh
+cargo run --release -- entrenar-rl --pasos 20000000 --ejecuciones-ga 64
+cargo run --release -- jugar resultados/prueba/mejor.txt
+cargo run --release -- evolucionar --agente modelos/agente.rla --objetivo-victorias 0.6
+```
+
+## Programación Genética: clasificador simbólico de jugabilidad
+
+La PG evoluciona una expresión sobre 21 rasgos estructurales que predice si un
+nivel es jugable sin ejecutar el BFS. Su aptitud es la cross-entropy binaria
+con escalado lineal (Keijzer, 2003) más una presión de parsimonia. Se compara
+con una regresión logística y un MLP entrenados con la misma pérdida.
+
+```sh
+cargo run --release -- entrenar-pg      # informe en resultados/pg
+```
+
 ## Experimentos
 
 ```sh
@@ -67,6 +93,8 @@ Friedman.
 | `nn` | Red neuronal con cross-entropy, Adam y chequeo de gradientes |
 | `naturalness`, `vglc` | Modelo de naturalidad de tiles y lector del corpus VGLC |
 | `baselines`, `experiment` | Búsqueda aleatoria, (1+1)-EA y ejecutor de experimentos |
+| `rl` | Entorno, agente actor-crítico y entrenamiento A2C |
+| `gp`, `surrogate` | Programación Genética, rasgos estructurales y modelos sustitutos |
 | `stats` | Mann-Whitney, Â12, Fisher, Kruskal-Wallis, Friedman y Holm |
 | `image`, `render`, `plot`, `ansi` | PNG, dibujo con tilesets, gráficas SVG y visor en terminal |
 

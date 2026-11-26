@@ -1,1 +1,1 @@
-doc-valid-idents = ["LeCun", "ReLU", "SplitMix64", "PageHinkley", ".."]
+doc-valid-idents = ["LeCun", "ReLU", "SplitMix64", "PageHinkley", "McPhee", "TinyGP", ".."]

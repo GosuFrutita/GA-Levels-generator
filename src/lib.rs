@@ -15,6 +15,7 @@ pub mod error;
 pub mod experiment;
 pub mod fitness;
 pub mod ga;
+pub mod gp;
 pub mod image;
 pub mod level;
 pub mod metrics;
@@ -27,6 +28,7 @@ pub mod report;
 pub mod rl;
 pub mod rng;
 pub mod stats;
+pub mod surrogate;
 pub mod vglc;
 
 pub use error::{Error, Result};

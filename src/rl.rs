@@ -32,8 +32,11 @@ pub const COLS: usize = (BACK + 1 + AHEAD) as usize;
 pub const OBS_POS: usize = HEIGHT * COLS;
 /// Categorías por posición: los tipos de tile más el borde.
 pub const OBS_CATS: usize = Tile::COUNT + 1;
-/// Rasgos densos: fila one-hot, escalera, progreso y distancia a la meta.
-pub const OBS_DENSE: usize = HEIGHT + 3;
+/// Rasgos densos: fila one-hot y si está en una escalera. No se incluyen el
+/// progreso ni la distancia a la meta: permitían memorizar cada nivel y
+/// empeoraban la generalización (las observaciones locales generalizan mejor,
+/// como observan Earle et al. en PCGRL+).
+pub const OBS_DENSE: usize = HEIGHT + 1;
 
 /// Acción del agente.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,40 +51,28 @@ pub enum Action {
     Jump(usize),
 }
 
-/// Saltos disponibles: `(dirección, altura, recorrido)`.
-const JUMPS: [(i8, u8, u8); 9] = [
-    (-1, 1, 2),
-    (-1, 2, 3),
-    (-1, 3, 4),
-    (-1, 3, 2),
-    (1, 1, 2),
-    (1, 2, 3),
-    (1, 3, 4),
-    (1, 3, 2),
-    (0, 3, 0),
-];
-
-/// Construye la tabla de acciones a partir de los arcos del verificador.
+/// Construye la tabla de acciones: caminar a cada lado, subir, bajar y **todos**
+/// los arcos de salto del verificador. Así el agente puede hacer exactamente
+/// lo mismo que el BFS: si el BFS dice que un nivel es jugable, existe una
+/// secuencia de acciones del agente que lo resuelve.
 ///
 /// # Panics
 ///
-/// Si la física del verificador no tiene alguno de los arcos de [`JUMPS`]
-/// (requiere altura ≥ 3 y longitud ≥ 4).
+/// Si la física no produce exactamente `ACTIONS − 4` arcos (la arquitectura
+/// de la red depende de ese número; vale para la física por defecto).
 pub fn action_table(checker: &Checker) -> Vec<Action> {
+    assert_eq!(
+        checker.arcs().len(),
+        ACTIONS - 4,
+        "el agente asume la física por defecto"
+    );
     let mut a = vec![Action::Walk(-1), Action::Walk(1), Action::Up, Action::Down];
-    for (dir, apex, run) in JUMPS {
-        let i = checker
-            .arcs()
-            .iter()
-            .position(|arc| arc.dir == dir && arc.apex == apex && arc.run == run)
-            .expect("la física debe permitir los saltos del agente");
-        a.push(Action::Jump(i));
-    }
+    a.extend((0..checker.arcs().len()).map(Action::Jump));
     a
 }
 
-/// Número de acciones.
-pub const ACTIONS: usize = 4 + JUMPS.len();
+/// Número de acciones con la física por defecto (4 + 27 arcos).
+pub const ACTIONS: usize = 4 + 27;
 
 /// Resultado de un paso.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -95,7 +86,7 @@ pub struct Step {
 /// Entorno de un nivel.
 #[derive(Debug, Clone)]
 pub struct Env<'a> {
-    level: &'a Level,
+    level: Level,
     checker: &'a Checker,
     actions: &'a [Action],
     /// Posición actual.
@@ -119,10 +110,11 @@ pub const STEP_PENALTY: f64 = -0.01;
 
 impl<'a> Env<'a> {
     /// Crea el entorno; `None` si el nivel no tiene salida o meta válidas.
-    pub fn new(level: &'a Level, checker: &'a Checker, actions: &'a [Action]) -> Option<Self> {
+    pub fn new(level: Level, checker: &'a Checker, actions: &'a [Action]) -> Option<Self> {
         let s = level.start()?;
         let g = level.goal()?;
-        let start = Checker::fall(level, s.0 as i32, s.1 as i32, |_, _| {})?;
+        let start = Checker::fall(&level, s.0 as i32, s.1 as i32, |_, _| {})?;
+        let max_steps = 3 * level.width();
         Some(Self {
             level,
             checker,
@@ -132,7 +124,7 @@ impl<'a> Env<'a> {
             goal: (g.0 as i32, g.1 as i32),
             max_x: start.0,
             steps: 0,
-            max_steps: 3 * level.width(),
+            max_steps,
             won: false,
             died: false,
             trail: Vec::new(),
@@ -166,8 +158,6 @@ impl<'a> Env<'a> {
         dense[HEIGHT] = f32::from(u8::from(
             self.level.get(self.pos.0 as usize, self.pos.1 as usize) == Tile::Ladder,
         ));
-        dense[HEIGHT + 1] = self.progress() as f32;
-        dense[HEIGHT + 2] = ((self.goal.0 - self.pos.0) as f32 / w as f32).clamp(-1.0, 1.0);
     }
 
     /// Aplica una acción.
@@ -175,7 +165,7 @@ impl<'a> Env<'a> {
         self.steps += 1;
         self.trail.clear();
         let (x, y) = self.pos;
-        let level = self.level;
+        let level = &self.level;
         let goal = self.goal;
         let mut touched_goal = false;
         let mut trail = std::mem::take(&mut self.trail);
@@ -319,7 +309,7 @@ impl Agent {
         rng: &mut Rng,
         greedy: bool,
     ) -> (bool, f64, usize) {
-        let Some(mut env) = Env::new(level, checker, actions) else {
+        let Some(mut env) = Env::new(level.clone(), checker, actions) else {
             return (false, 0.0, 0);
         };
         let mut tape = self.net.tape();
@@ -340,7 +330,7 @@ impl Agent {
     ) -> (Vec<(usize, usize)>, bool) {
         let actions = action_table(checker);
         let mut out = Vec::new();
-        let Some(mut env) = Env::new(level, checker, &actions) else {
+        let Some(mut env) = Env::new(level.clone(), checker, &actions) else {
             return (out, false);
         };
         let mut tape = self.net.tape();
@@ -428,6 +418,14 @@ pub struct A2cConfig {
     pub hidden: Vec<usize>,
     /// Semilla.
     pub seed: u64,
+    /// Ancho de los niveles al empezar el currículo.
+    pub min_width: usize,
+    /// Ancho final de los niveles.
+    pub max_width: usize,
+    /// Probabilidad de aceptar un nivel injugable como episodio.
+    pub unsolvable: f64,
+    /// Normalizar las ventajas de cada lote.
+    pub normalize_advantages: bool,
 }
 
 impl Default for A2cConfig {
@@ -443,6 +441,10 @@ impl Default for A2cConfig {
             total_steps: 2_000_000,
             hidden: vec![64, 64],
             seed: 0,
+            min_width: 20,
+            max_width: 60,
+            unsolvable: 0.1,
+            normalize_advantages: true,
         }
     }
 }
@@ -474,6 +476,20 @@ struct Transition {
     value: f64,
 }
 
+/// Aumento de datos: aplica a un nivel del GA de 2 a 4 mutaciones macro y unos
+/// 10 cambios puntuales antes de repararlo. Sin esto el agente memorizaba los
+/// niveles del GA (48 % de victorias en los vistos frente a 2 % en los nuevos).
+fn augment(level: &mut Level, rng: &mut Rng) {
+    use crate::ga::variation::{MacroOp, macro_mutation, point_mutation};
+    for _ in 0..2 + rng.index(3) {
+        let op = MacroOp::ALL[rng.index(MacroOp::ALL.len())];
+        macro_mutation(level, op, rng);
+    }
+    let cells = ((level.width() - 2 * crate::level::SAFE_COLS) * HEIGHT) as f64;
+    point_mutation(level, 10.0 / cells, rng);
+    crate::ga::init::repair(level, true);
+}
+
 /// Estado del entrenamiento A2C.
 struct Trainer<'a> {
     levels: &'a [Level],
@@ -490,13 +506,45 @@ struct Trainer<'a> {
     ent_sum: f64,
     ent_n: usize,
     steps: usize,
+    scratch: crate::play::PlayScratch,
 }
 
 impl<'a> Trainer<'a> {
+    /// Nivel del siguiente episodio. Currículo de **longitud**: el ancho crece
+    /// linealmente de `min_width` a `max_width` durante la primera mitad del
+    /// entrenamiento. La mitad de los niveles son ventanas recortadas de los
+    /// niveles del GA con mutaciones (ver [`augment`]). La otra mitad se genera
+    /// al azar en el momento. Así el agente casi nunca ve dos veces el mismo
+    /// nivel y no puede memorizarlos.
+    /// Se descartan los injugables (según el BFS) salvo una fracción
+    /// `unsolvable`, para que también aprenda a progresar donde no se puede ganar.
+    fn next_level(&mut self) -> Level {
+        let half = (self.cfg.total_steps / 2).max(1) as f64;
+        let t = (self.steps as f64 / half).min(1.0);
+        let (lo, hi) = (self.cfg.min_width as f64, self.cfg.max_width as f64);
+        let width = (lo + (hi - lo) * t).round() as usize;
+        loop {
+            let level = if !self.levels.is_empty() && self.rng.chance(0.5) {
+                let src = &self.levels[self.rng.index(self.levels.len())];
+                let w = width.min(src.width());
+                let x0 = self.rng.index(src.width() - w + 1);
+                let mut l = crate::ga::init::window(src, x0, w);
+                augment(&mut l, &mut self.rng);
+                l
+            } else {
+                crate::ga::init::random_level(width, &mut self.rng)
+            };
+            let solvable = self.checker.check(&level, &mut self.scratch).solvable;
+            if solvable || self.rng.chance(self.cfg.unsolvable) {
+                return level;
+            }
+        }
+    }
+
     fn spawn(&mut self) -> Env<'a> {
         loop {
-            let l = &self.levels[self.rng.index(self.levels.len())];
-            if let Some(e) = Env::new(l, self.checker, self.actions) {
+            let level = self.next_level();
+            if let Some(e) = Env::new(level, self.checker, self.actions) {
                 return e;
             }
         }
@@ -563,20 +611,44 @@ impl<'a> Trainer<'a> {
 
     /// Retornos de `n` pasos con *bootstrap* del crítico, gradientes y paso de Adam.
     fn update(&mut self, envs: &[Env<'a>], opt: &mut Adam<f32>) {
-        self.grads.fill(0.0);
-        let batch: usize = self.buf.iter().map(Vec::len).sum();
-        let scale = 1.0 / batch as f32;
+        // 1. Retornos y ventajas de cada transición.
+        let mut targets: Vec<Vec<(f64, f64)>> = Vec::with_capacity(envs.len());
         for (e, env) in envs.iter().enumerate() {
-            let bootstrap = if self.buf[e].last().is_some_and(|t| t.done) {
+            let mut ret = if self.buf[e].last().is_some_and(|t| t.done) {
                 0.0
             } else {
                 self.observe_value(env)
             };
+            let mut t: Vec<(f64, f64)> = self.buf[e]
+                .iter()
+                .rev()
+                .map(|tr| {
+                    ret = tr.reward + self.cfg.gamma * ret * f64::from(u8::from(!tr.done));
+                    (ret, ret - tr.value)
+                })
+                .collect();
+            t.reverse();
+            targets.push(t);
+        }
+        // 2. Normalización de las ventajas del lote (media 0, desviación 1):
+        //    hace que la escala del término de política no dependa de la de
+        //    las recompensas y no quede ahogada por el bono de entropía.
+        let all: Vec<f64> = targets.iter().flatten().map(|t| t.1).collect();
+        let n = all.len() as f64;
+        let mean = all.iter().sum::<f64>() / n;
+        let sd = (all.iter().map(|a| (a - mean).powi(2)).sum::<f64>() / n).sqrt();
+        let (mean, sd) = if self.cfg.normalize_advantages {
+            (mean, sd.max(1e-8))
+        } else {
+            (0.0, 1.0)
+        };
+        // 3. Gradientes.
+        self.grads.fill(0.0);
+        let scale = 1.0 / n as f32;
+        for (e, tgt) in targets.iter().enumerate() {
             let tail = std::mem::take(&mut self.buf[e]);
-            let mut ret = bootstrap;
-            for tr in tail.iter().rev() {
-                ret = tr.reward + self.cfg.gamma * ret * f64::from(u8::from(!tr.done));
-                let adv = (ret - tr.value) as f32;
+            for (tr, &(ret, adv)) in tail.iter().zip(tgt) {
+                let adv = ((adv - mean) / sd) as f32;
                 self.agent.net.forward(
                     Input {
                         cats: &tr.cats,
@@ -621,12 +693,10 @@ impl<'a> Trainer<'a> {
     }
 }
 
-/// Entrena el agente con A2C sobre un conjunto de niveles (currículo: el nivel
-/// de cada episodio se sortea entre `levels`).
+/// Entrena el agente con A2C. Cada episodio usa un nivel nuevo: una ventana de
+/// uno de `levels` (p. ej. niveles del GA) o un nivel aleatorio, con un
+/// currículo de longitud creciente (ver `Trainer::next_level`).
 ///
-/// # Panics
-///
-/// Si `levels` está vacío.
 pub fn train(
     levels: &[Level],
     checker: &Checker,
@@ -634,7 +704,6 @@ pub fn train(
     mut log: impl FnMut(&TrainLog),
 ) -> (Agent, Vec<TrainLog>) {
     const LOG_EVERY: usize = 50_000;
-    assert!(!levels.is_empty(), "hace falta al menos un nivel");
     let actions = action_table(checker);
     let mut rng = Rng::seed_from_u64(cfg.seed);
     let agent = Agent::new(cfg.hidden.clone(), &mut rng);
@@ -657,6 +726,7 @@ pub fn train(
         ent_sum: 0.0,
         ent_n: 0,
         steps: 0,
+        scratch: crate::play::PlayScratch::default(),
     };
     let mut envs: Vec<Env<'_>> = (0..cfg.envs).map(|_| t.spawn()).collect();
     let mut history = Vec::new();
@@ -766,7 +836,7 @@ mod tests {
         let actions = action_table(&checker);
         assert_eq!(actions.len(), ACTIONS);
         let l = flat(20, Some(8));
-        let mut env = Env::new(&l, &checker, &actions).expect("válido");
+        let mut env = Env::new(l.clone(), &checker, &actions).expect("válido");
         // Caminar a la derecha hasta el borde del hueco.
         while env.pos.0 < 7 {
             assert!(!env.step(1).done);
@@ -775,11 +845,15 @@ mod tests {
         let s = env.step(1);
         assert!(s.done && env.died && s.reward < -0.9);
         // Saltar el hueco y llegar a la meta.
-        let mut env = Env::new(&l, &checker, &actions).expect("válido");
+        let mut env = Env::new(l.clone(), &checker, &actions).expect("válido");
         while env.pos.0 < 7 {
             env.step(1);
         }
-        let long_right = 4 + 6; // (1, 3, 4)
+        let long_right = 4 + checker
+            .arcs()
+            .iter()
+            .position(|a| a.dir == 1 && a.apex == 3 && a.run == 4)
+            .expect("arco largo");
         assert!(!env.step(long_right).done);
         assert!(env.pos.0 >= 11, "{:?}", env.pos);
         while !env.won {
@@ -797,6 +871,9 @@ mod tests {
             total_steps: 60_000,
             hidden: vec![32],
             seed: 3,
+            min_width: 24,
+            max_width: 24,
+            unsolvable: 0.0,
             ..A2cConfig::default()
         };
         let (agent, hist) = train(&levels, &checker, &cfg, |_| {});

@@ -143,6 +143,20 @@ pub fn random_level(width: usize, rng: &mut Rng) -> Level {
     l
 }
 
+/// Recorta la ventana de columnas `[x0, x0 + width)` de un nivel y la
+/// convierte en un nivel completo (con sus zonas de salida y meta).
+///
+/// # Panics
+///
+/// Si la ventana se sale del nivel o es demasiado estrecha.
+pub fn window(level: &Level, x0: usize, width: usize) -> Level {
+    assert!(x0 + width <= level.width(), "ventana fuera del nivel");
+    let tiles = level.tiles()[x0 * HEIGHT..(x0 + width) * HEIGHT].to_vec();
+    let mut out = Level::from_tiles(tiles, level.style).expect("ancho suficiente");
+    repair(&mut out, true);
+    out
+}
+
 /// Nivel completamente aleatorio (cada celda uniforme entre los tiles
 /// evolucionables). Línea base "sin conocimiento del dominio".
 pub fn uniform_level(width: usize, rng: &mut Rng) -> Level {

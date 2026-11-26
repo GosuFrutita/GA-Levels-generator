@@ -29,6 +29,10 @@ USO:
                                       entrena el agente A2C (cross-entropy ponderada)
   nivelga jugar <nivel.txt> [--agente modelos/agente.rla]
                                       anima en la terminal al agente jugando
+  nivelga entrenar-pg [--muestras 20000] [--poblacion 500] [--generaciones 50]
+                      [--parsimonia 0.001] [--salida resultados/pg]
+                                      PG simbólica que predice la jugabilidad (BCE)
+                                      frente a regresión logística y MLP
   nivelga entrenar-nn [--datos data/vglc/smb] [--salida modelos/naturalidad.nng]
                       [--epocas 80] [--ocultas 32] [--lr 0.001] [--suavizado 0.05]
                                       entrena la red de naturalidad (cross-entropy)
@@ -253,9 +257,12 @@ fn entrenar_nn(mut args: Args) -> Result<()> {
     Ok(())
 }
 
-/// Construye el currículo del agente: poblaciones finales de varias
-/// ejecuciones del GA más niveles aleatorios. Devuelve `(entrenamiento, prueba)`.
-fn rl_pool(width: usize, seeds: u64) -> (Vec<Level>, Vec<Level>) {
+/// Niveles para el agente: uno de cada cinco individuos de la población final
+/// de varias ejecuciones cortas del GA. Una de cada cuatro ejecuciones se
+/// reserva para la prueba, junto con niveles aleatorios nuevos. El
+/// entrenamiento recorta ventanas de los niveles de entrenamiento y genera
+/// niveles aleatorios sobre la marcha. Devuelve `(entrenamiento, prueba del GA, prueba aleatoria)`.
+fn rl_pool(width: usize, seeds: u64) -> (Vec<Level>, Vec<Level>, Vec<Level>) {
     let checker = Checker::default();
     let mut train = Vec::new();
     let mut test = Vec::new();
@@ -263,24 +270,18 @@ fn rl_pool(width: usize, seeds: u64) -> (Vec<Level>, Vec<Level>) {
         let cfg = ga::GaConfig {
             seed: 1000 + seed,
             width,
-            generations: 60,
+            generations: 40,
             ..ga::GaConfig::default()
         };
         let r = ga::run(&cfg, &checker, Extras::default(), |_, _, _| {});
-        // Una de cada cuatro ejecuciones se reserva para la prueba.
         let dest = if seed % 4 == 3 { &mut test } else { &mut train };
-        dest.extend(r.final_population.into_iter().map(|(l, _)| l));
+        dest.extend(r.final_population.into_iter().step_by(5).map(|(l, _)| l));
     }
     let mut rng = nivelga::rng::Rng::seed_from_u64(77);
-    for i in 0..(seeds as usize * 50) {
-        let l = ga::init::random_level(width, &mut rng);
-        if i % 4 == 3 {
-            test.push(l);
-        } else {
-            train.push(l);
-        }
-    }
-    (train, test)
+    let random = (0..seeds as usize * 4)
+        .map(|_| ga::init::random_level(width, &mut rng))
+        .collect();
+    (train, test, random)
 }
 
 fn entrenar_rl(mut args: Args) -> Result<()> {
@@ -308,14 +309,19 @@ fn entrenar_rl(mut args: Args) -> Result<()> {
         ..d
     };
     let width = args.get("ancho", 60_usize)?;
-    let seeds = args.get("ejecuciones-ga", 8_u64)?;
+    let cfg = rl::A2cConfig {
+        max_width: width,
+        min_width: args.get("ancho-inicial", cfg.min_width)?.min(width),
+        ..cfg
+    };
+    let seeds = args.get("ejecuciones-ga", 32_u64)?;
     let out = PathBuf::from(
         args.take("salida")
             .unwrap_or_else(|| "modelos/agente.rla".into()),
     );
     args.finish()?;
     eprintln!("generando currículo con {seeds} ejecuciones del GA (ancho {width})...");
-    let (train, test) = rl_pool(width, seeds);
+    let (train, test, random) = rl_pool(width, seeds);
     eprintln!(
         "{} niveles de entrenamiento y {} de prueba",
         train.len(),
@@ -366,7 +372,13 @@ fn entrenar_rl(mut args: Args) -> Result<()> {
             ],
         ),
     )?;
-    println!("{}", playtester_report(&agent, &test, &checker, cfg.seed));
+    let seen: Vec<Level> = train.iter().step_by(4).cloned().collect();
+    let groups: [(&str, &[Level]); 3] = [
+        ("GA, vistos (muestra)", &seen),
+        ("GA, nuevos", &test),
+        ("aleatorios, nuevos", &random),
+    ];
+    println!("{}", playtester_report(&agent, &groups, &checker, cfg.seed));
     println!(
         "agente guardado en {} ({} parámetros)",
         out.display(),
@@ -375,40 +387,209 @@ fn entrenar_rl(mut args: Args) -> Result<()> {
     Ok(())
 }
 
-/// Evalúa el agente como probador en los niveles de prueba.
-fn playtester_report(agent: &Agent, test: &[Level], checker: &Checker, seed: u64) -> String {
+/// Evalúa el agente como probador en varios grupos de niveles: victorias en
+/// los jugables, comparación con la red sin entrenar, niveles injugables
+/// "ganados" (debe ser 0) y correlación de Spearman con la dificultad `D`.
+fn playtester_report(
+    agent: &Agent,
+    groups: &[(&str, &[Level])],
+    checker: &Checker,
+    seed: u64,
+) -> String {
     let cfg = nivelga::fitness::FitnessConfig::default();
     let mut ev = nivelga::fitness::Evaluator::new(checker, &cfg);
     let untrained = Agent::new(
         agent.net.spec().hidden.clone(),
         &mut nivelga::rng::Rng::seed_from_u64(seed + 99),
     );
-    let (mut wins, mut wins_base, mut solvable, mut false_wins) = (0.0, 0.0, 0, 0);
-    let (mut rates, mut diffs) = (Vec::new(), Vec::new());
-    for l in test {
-        let e = ev.evaluate(l, Extras::default());
-        let t = rl::playtest(agent, l, checker, 10, seed);
-        let b = rl::playtest(&untrained, l, checker, 10, seed);
-        wins += t.win_rate;
-        wins_base += b.win_rate;
-        if e.feasible {
-            solvable += 1;
-            rates.push(t.win_rate);
-            diffs.push(e.difficulty);
-        } else if t.win_rate > 0.0 {
-            false_wins += 1;
+    let mut rep = String::from(
+        "grupo | niveles | jugables (BFS) | victorias en jugables | sin entrenar | injugables ganados | Spearman(victorias, D)\n",
+    );
+    for (name, levels) in groups {
+        let (mut base, mut false_wins) = (0.0, 0);
+        let (mut rates, mut diffs) = (Vec::new(), Vec::new());
+        for l in *levels {
+            let e = ev.evaluate(l, Extras::default());
+            let t = rl::playtest(agent, l, checker, 10, seed);
+            if e.feasible {
+                rates.push(t.win_rate);
+                diffs.push(e.difficulty);
+                base += rl::playtest(&untrained, l, checker, 10, seed).win_rate;
+            } else if t.win_rate > 0.0 {
+                false_wins += 1;
+            }
         }
+        let k = rates.len().max(1) as f64;
+        let _ = writeln!(
+            rep,
+            "{name} | {} | {} | {:.1} % | {:.1} % | {false_wins} | {:.3}",
+            levels.len(),
+            rates.len(),
+            100.0 * rates.iter().sum::<f64>() / k,
+            100.0 * base / k,
+            nivelga::stats::spearman(&rates, &diffs)
+        );
     }
-    let n = test.len().max(1) as f64;
-    let solved_rate = rates.iter().sum::<f64>() / rates.len().max(1) as f64;
-    format!(
-        "Prueba en {} niveles nuevos ({solvable} jugables según el BFS):\n         victorias del agente entrenado: {:.1} % (sin entrenar: {:.1} %)\n         victorias en los niveles jugables: {:.1} %\n         niveles injugables que el agente ganó (debe ser 0): {false_wins}\n         Spearman(victorias del agente, dificultad D) en jugables: {:.3}",
+    rep
+}
+
+/// Guarda el historial de la PG en CSV y sus curvas (BCE y tamaño) en SVG.
+fn save_gp_history(out: &std::path::Path, history: &[nivelga::gp::GpStats]) -> Result<()> {
+    let mut csv = String::from("generacion,mejor_bce,tamano_medio,tamano_mejor\n");
+    for h in history {
+        let _ = writeln!(
+            csv,
+            "{},{:.6},{:.3},{}",
+            h.generation, h.best_bce, h.mean_size, h.best_size
+        );
+    }
+    std::fs::write(out.join("historial.csv"), csv)?;
+    let line = |name: &str, f: &dyn Fn(&nivelga::gp::GpStats) -> f64| nivelga::plot::Series {
+        name: name.into(),
+        points: history
+            .iter()
+            .map(|h| (h.generation as f64, f(h)))
+            .collect(),
+        band: vec![],
+    };
+    std::fs::write(
+        out.join("bce.svg"),
+        nivelga::plot::line_chart(
+            "PG: mejor cross-entropy binaria",
+            "generación",
+            "BCE",
+            &[line("mejor BCE", &|h| h.best_bce)],
+        ),
+    )?;
+    std::fs::write(
+        out.join("tamano.svg"),
+        nivelga::plot::line_chart(
+            "PG: tamaño de los árboles (bloat)",
+            "generación",
+            "nodos",
+            &[
+                line("tamaño medio", &|h| h.mean_size),
+                line("tamaño del mejor", &|h| h.best_size as f64),
+            ],
+        ),
+    )?;
+    Ok(())
+}
+
+/// Conjunto de datos de la PG: niveles aleatorios y variantes de niveles
+/// evolucionados, etiquetados por el BFS.
+fn pg_dataset(checker: &Checker, n: usize, seed: u64) -> nivelga::surrogate::Dataset {
+    eprintln!("generando niveles evolucionados para el conjunto de datos...");
+    let mut evolved = Vec::new();
+    for s in 0..8 {
+        let c = ga::GaConfig {
+            seed: 500 + s,
+            generations: 40,
+            ..ga::GaConfig::default()
+        };
+        let r = ga::run(&c, checker, Extras::default(), |_, _, _| {});
+        evolved.extend(r.final_population.into_iter().map(|(l, _)| l));
+    }
+    nivelga::surrogate::build_dataset(n, 120, &evolved, checker, seed)
+}
+
+fn entrenar_pg(mut args: Args) -> Result<()> {
+    use nivelga::gp::{self, GpConfig};
+    use nivelga::surrogate::{self, Logistic};
+    let n = args.get("muestras", 20_000_usize)?;
+    let fit_n = args.get("muestras-aptitud", 3_000_usize)?;
+    let d = GpConfig::default();
+    let cfg = GpConfig {
+        population: args.get("poblacion", d.population)?,
+        generations: args.get("generaciones", d.generations)?,
+        tournament: args.get("torneo", d.tournament)?,
+        parsimony: args.get("parsimonia", d.parsimony)?,
+        seed: args.get("semilla", d.seed)?,
+        ..d
+    };
+    let out = PathBuf::from(
+        args.take("salida")
+            .unwrap_or_else(|| "resultados/pg".into()),
+    );
+    args.finish()?;
+    std::fs::create_dir_all(&out)?;
+    let checker = Checker::default();
+    let data = pg_dataset(&checker, n, cfg.seed);
+    let (mut train, mut test) = data.split(4);
+    let (m, sd) = train.moments();
+    train.standardize(&m, &sd);
+    test.standardize(&m, &sd);
+    eprintln!(
+        "{} muestras de entrenamiento y {} de prueba; jugables: {:.1} %",
+        train.len(),
         test.len(),
-        100.0 * wins / n,
-        100.0 * wins_base / n,
-        100.0 * solved_rate,
-        nivelga::stats::spearman(&rates, &diffs)
-    )
+        100.0 * data.positive_rate()
+    );
+    let threads = ga::effective_threads(0);
+    // La aptitud de la PG usa una submuestra fija para que cada evaluación sea barata.
+    let fit_set = surrogate::Dataset {
+        x: train.x.iter().take(fit_n).copied().collect(),
+        y: train.y.iter().take(fit_n).copied().collect(),
+    };
+    let t0 = std::time::Instant::now();
+    let res = gp::evolve(&fit_set, &cfg, threads, |s| {
+        if s.generation % 5 == 0 {
+            eprintln!(
+                "gen {:3} | BCE {:.4} | tamaño medio {:6.1} | tamaño del mejor {}",
+                s.generation, s.best_bce, s.mean_size, s.best_size
+            );
+        }
+    });
+    let gp_secs = t0.elapsed().as_secs_f64();
+    let logistic = Logistic::train(&train, 30, 0.01, cfg.seed);
+    let mlp = surrogate::train_mlp(&train, 32, 30, 1e-3, cfg.seed);
+    let mut stack = Vec::new();
+    let mut tape = mlp.tape();
+    let p_gp: Vec<f64> = test
+        .x
+        .iter()
+        .map(|x| gp::predict(&res.best, res.scaling, x, &mut stack))
+        .collect();
+    let p_lr: Vec<f64> = test.x.iter().map(|x| logistic.predict(x)).collect();
+    let p_mlp: Vec<f64> = test
+        .x
+        .iter()
+        .map(|x| surrogate::mlp_predict(&mlp, x, &mut tape))
+        .collect();
+    let base = test.y.iter().sum::<f64>() / test.len().max(1) as f64;
+    let p_base = vec![base; test.len()];
+    let mut rep =
+        String::from("modelo | BCE | exactitud | F1 injugable | AUC | ECE | parámetros\n");
+    for (name, p, params) in [
+        ("tasa base", &p_base, 1),
+        ("regresión logística", &p_lr, surrogate::NF + 1),
+        ("MLP (32 ocultas)", &p_mlp, mlp.num_params()),
+        ("PG simbólica", &p_gp, res.best.len()),
+    ] {
+        let mt = surrogate::metrics(p, &test.y);
+        let _ = writeln!(
+            rep,
+            "{name} | {:.4} | {:.3} | {:.3} | {:.3} | {:.3} | {params}",
+            mt.bce, mt.accuracy, mt.f1_unplayable, mt.auc, mt.ece
+        );
+    }
+    let _ = writeln!(
+        rep,
+        "\nPG: {gp_secs:.1} s, {} nodos, profundidad {}",
+        res.best.len(),
+        gp::depth(&res.best)
+    );
+    let _ = writeln!(
+        rep,
+        "jugable ⇔ σ({:.3}·f + {:.3}) ≥ 0,5 con rasgos estandarizados y\nf = {}",
+        res.scaling.0,
+        res.scaling.1,
+        gp::to_infix(&res.best)
+    );
+    std::fs::write(out.join("informe.txt"), &rep)?;
+    save_gp_history(&out, &res.history)?;
+    println!("{rep}");
+    Ok(())
 }
 
 fn jugar(mut args: Args) -> Result<()> {
@@ -590,6 +771,7 @@ fn main() -> Result<()> {
         "entrenar-nn" => entrenar_nn(args),
         "entrenar-rl" => entrenar_rl(args),
         "jugar" => jugar(args),
+        "entrenar-pg" => entrenar_pg(args),
         "experimentos" => {
             for (n, d) in nivelga::experiment::EXPERIMENTS {
                 println!("{n:4}  {d}");
