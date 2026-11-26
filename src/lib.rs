@@ -18,6 +18,7 @@ pub mod ga;
 pub mod image;
 pub mod level;
 pub mod metrics;
+pub mod naturalness;
 pub mod nn;
 pub mod play;
 pub mod plot;
@@ -25,5 +26,6 @@ pub mod render;
 pub mod report;
 pub mod rng;
 pub mod stats;
+pub mod vglc;
 
 pub use error::{Error, Result};

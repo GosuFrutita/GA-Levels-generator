@@ -252,8 +252,11 @@ impl<T: Float> Net<T> {
             }
         }
         for (f, &v) in x.dense.iter().enumerate() {
-            let o = l.dense_w + f * h0;
-            axpy(v, &self.params[o..o + h0], a0);
+            // Los rasgos one-hot son casi todos cero: se saltan sin coste.
+            if v != T::ZERO {
+                let o = l.dense_w + f * h0;
+                axpy(v, &self.params[o..o + h0], a0);
+            }
         }
         for v in a0.iter_mut() {
             *v = self.activate(*v);

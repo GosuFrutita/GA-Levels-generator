@@ -9,10 +9,10 @@ pub const PALETTE: [&str; 8] = [
     "#0072B2", "#D55E00", "#009E73", "#CC79A7", "#E69F00", "#56B4E9", "#F0E442", "#000000",
 ];
 
-const W: f64 = 760.0;
+const W: f64 = 800.0;
 const H: f64 = 420.0;
 const ML: f64 = 70.0;
-const MR: f64 = 170.0;
+const MR: f64 = 200.0;
 const MT: f64 = 40.0;
 const MB: f64 = 55.0;
 

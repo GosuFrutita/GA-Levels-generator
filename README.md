@@ -30,6 +30,31 @@ cargo run --release -- comprobar resultados/prueba/mejor.txt
 `diversidad.svg` y `estilos.svg`) junto con el mejor nivel en texto y en PNG
 con su trayectoria óptima. También guarda el mejor nivel jugable de cada estilo.
 
+## Red de naturalidad (cross-entropy)
+
+Un MLP aprende a predecir cada tile a partir de su contexto en los niveles de
+Super Mario Bros del VGLC. Su log-verosimilitud negativa se usa como término de
+aptitud para que los niveles se parezcan a niveles diseñados por personas.
+
+```sh
+sh scripts/descargar_vglc.sh            # datos (no se versionan)
+cargo run --release -- entrenar-nn      # guarda modelos/naturalidad.nng
+cargo run --release -- evolucionar --naturalidad modelos/naturalidad.nng
+```
+
+## Experimentos
+
+```sh
+cargo run --release -- experimentos     # lista e1 a e10
+cargo run --release -- experimento e1 --repeticiones 30
+cargo run --release -- experimento todos --repeticiones 30 --naturalidad modelos/naturalidad.nng
+```
+
+Cada experimento usa las mismas semillas para todas las variantes y guarda el
+CSV por ejecución, el resumen, las curvas de convergencia, los diagramas de
+caja y un informe con Kruskal-Wallis, Mann-Whitney con Holm, Â12, Fisher y
+Friedman.
+
 ## Componentes
 
 | Módulo | Contenido |
@@ -40,6 +65,8 @@ con su trayectoria óptima. También guarda el mejor nivel jugable de cada estil
 | `fitness` | Agregación multiobjetivo con la jugabilidad como restricción dura |
 | `ga` | Selección (torneo y ruleta con escalado y SUS), cruce, mutación, elitismo, reparación, bandido D-MAB |
 | `nn` | Red neuronal con cross-entropy, Adam y chequeo de gradientes |
+| `naturalness`, `vglc` | Modelo de naturalidad de tiles y lector del corpus VGLC |
+| `baselines`, `experiment` | Búsqueda aleatoria, (1+1)-EA y ejecutor de experimentos |
 | `stats` | Mann-Whitney, Â12, Fisher, Kruskal-Wallis, Friedman y Holm |
 | `image`, `render`, `plot`, `ansi` | PNG, dibujo con tilesets, gráficas SVG y visor en terminal |
 
@@ -49,6 +76,7 @@ con su trayectoria óptima. También guarda el mejor nivel jugable de cada estil
 cargo fmt --check
 cargo clippy --all-targets
 cargo test
+cargo bench --bench evaluacion
 ```
 
 El código usa `clippy::pedantic` sin avisos y prohíbe `unsafe`. Los

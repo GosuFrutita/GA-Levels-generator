@@ -38,3 +38,7 @@ panic = "abort"
 [profile.profiling]
 inherits = "release"
 debug = "line-tables-only"
+
+[[bench]]
+name = "evaluacion"
+harness = false

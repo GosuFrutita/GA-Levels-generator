@@ -1,3 +1,5 @@
 /target
 /resultados
 *.tmp
+/data
+/modelos

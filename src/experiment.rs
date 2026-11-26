@@ -7,7 +7,7 @@
 
 use crate::baselines::{one_plus_one, random_search};
 use crate::error::{Error, Result};
-use crate::fitness::{Aggregation, Evaluation};
+use crate::fitness::{Aggregation, Evaluation, Scorer};
 use crate::ga::selection::{Scaling, Selection};
 use crate::ga::variation::Crossover;
 use crate::ga::{self, GaConfig, OperatorControl};
@@ -70,13 +70,19 @@ pub struct RunSummary {
 }
 
 /// Ejecuta una variante con una semilla.
-pub fn run_variant(index: usize, v: &Variant, seed: u64, checker: &Checker) -> RunSummary {
+pub fn run_variant(
+    index: usize,
+    v: &Variant,
+    seed: u64,
+    checker: &Checker,
+    scorer: Option<&dyn Scorer>,
+) -> RunSummary {
     let cfg = GaConfig {
         seed,
         threads: 1,
         ..v.config.clone()
     };
-    let mut r = run_variant_raw(index, v, &cfg, checker);
+    let mut r = run_variant_raw(index, v, &cfg, checker, scorer);
     // Misma resolución para todos los algoritmos: el primer lote cuya mejor
     // aptitud indica un nivel jugable (los jugables valen al menos 0,1).
     r.first_feasible = r
@@ -88,11 +94,17 @@ pub fn run_variant(index: usize, v: &Variant, seed: u64, checker: &Checker) -> R
     r
 }
 
-fn run_variant_raw(index: usize, v: &Variant, cfg: &GaConfig, checker: &Checker) -> RunSummary {
+fn run_variant_raw(
+    index: usize,
+    v: &Variant,
+    cfg: &GaConfig,
+    checker: &Checker,
+    scorer: Option<&dyn Scorer>,
+) -> RunSummary {
     let seed = cfg.seed;
     match v.algorithm {
         Algorithm::Ga => {
-            let r = ga::run(cfg, checker, None, |_, _, _| {});
+            let r = ga::run(cfg, checker, scorer, |_, _, _| {});
             let first_feasible = r
                 .history
                 .iter()
@@ -121,9 +133,9 @@ fn run_variant_raw(index: usize, v: &Variant, cfg: &GaConfig, checker: &Checker)
         }
         Algorithm::Random | Algorithm::OnePlusOne => {
             let r = if v.algorithm == Algorithm::Random {
-                random_search(cfg, checker, None)
+                random_search(cfg, checker, scorer)
             } else {
-                one_plus_one(cfg, checker, None)
+                one_plus_one(cfg, checker, scorer)
             };
             RunSummary {
                 variant: index,
@@ -152,6 +164,7 @@ pub fn run_all(
     variants: &[Variant],
     runs: u64,
     threads: usize,
+    scorer: Option<&dyn Scorer>,
     progress: impl Fn(usize, usize) + Sync,
 ) -> Vec<RunSummary> {
     let jobs: Vec<(usize, u64)> = (0..variants.len())
@@ -173,7 +186,7 @@ pub fn run_all(
                         .skip(t)
                         .step_by(threads)
                         .map(|(i, &(v, seed))| {
-                            let r = run_variant(v, &variants[v], seed, &checker);
+                            let r = run_variant(v, &variants[v], seed, &checker, scorer);
                             let k = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                             progress(k, total);
                             (i, r)
@@ -201,7 +214,7 @@ fn ga_variant(name: impl Into<String>, config: GaConfig) -> Variant {
 }
 
 /// Nombres de los experimentos disponibles.
-pub const EXPERIMENTS: [(&str, &str); 9] = [
+pub const EXPERIMENTS: [(&str, &str); 10] = [
     (
         "e1",
         "¿Aporta el GA? GA frente a búsqueda aleatoria, (1+1)-EA y GA sin cruce",
@@ -223,6 +236,10 @@ pub const EXPERIMENTS: [(&str, &str); 9] = [
     (
         "e7",
         "Instancias: tres dificultades objetivo por tres anchos (prueba de Friedman)",
+    ),
+    (
+        "e8",
+        "Red de naturalidad: GA con y sin el término de cross-entropy",
     ),
     ("e9", "Rango expresivo de los mejores niveles"),
     (
@@ -313,6 +330,7 @@ pub fn define(name: &str, base: &GaConfig) -> Result<Vec<Variant>> {
         })
         .collect(),
         "e7" => define_e7(&b),
+        "e8" => define_e8(&b),
         "e9" => vec![ga_variant("GA", b())],
         "e10" => vec![
             ga_variant("uniforme", b()),
@@ -396,6 +414,17 @@ fn define_e7(b: &dyn Fn() -> GaConfig) -> Vec<Variant> {
         }
     }
     v
+}
+
+fn define_e8(b: &dyn Fn() -> GaConfig) -> Vec<Variant> {
+    let mut with = b();
+    with.fitness.weights.naturalness = 0.15;
+    let mut without = b();
+    without.fitness.weights.naturalness = 0.0;
+    vec![
+        ga_variant("GA", without),
+        ga_variant("GA + naturalidad", with),
+    ]
 }
 
 /// Umbral de éxito: jugable y con aptitud al menos este valor.
@@ -746,6 +775,70 @@ pub fn e9_expressive_range(dir: &Path, runs: &[RunSummary]) -> Result<String> {
     Ok(rep)
 }
 
+/// Compara la naturalidad (según el modelo) de los mejores niveles de cada
+/// variante, también para las que no la optimizaban.
+pub fn e8_naturalness(variants: &[Variant], runs: &[RunSummary], model: &dyn Scorer) -> String {
+    let mut names: Vec<&str> = Vec::new();
+    for v in variants {
+        if !names.contains(&v.name.as_str()) {
+            names.push(&v.name);
+        }
+    }
+    let groups: Vec<Vec<f64>> = names
+        .iter()
+        .map(|n| {
+            runs.iter()
+                .filter(|r| variants[r.variant].name == *n)
+                .map(|r| model.score(&r.level))
+                .collect()
+        })
+        .collect();
+    let mut rep = String::from(
+        "\nNota: la aptitud F no es comparable entre estas variantes porque la función \
+         objetivo cambia.\nObjetivos comunes del mejor nivel (mediana):\n",
+    );
+    for n in &names {
+        let rs: Vec<&RunSummary> = runs
+            .iter()
+            .filter(|r| variants[r.variant].name == *n)
+            .collect();
+        let med = |f: &dyn Fn(&RunSummary) -> f64| {
+            stats::summary(&rs.iter().map(|r| f(r)).collect::<Vec<_>>()).median
+        };
+        let _ = writeln!(
+            rep,
+            "  {n}: D = {:.3}, V = {:.3}, C = {:.3}, jugables {}/{}",
+            med(&|r| r.eval.difficulty),
+            med(&|r| r.eval.variety),
+            med(&|r| r.eval.coherence),
+            rs.iter().filter(|r| r.eval.feasible).count(),
+            rs.len()
+        );
+    }
+    rep.push_str("\nNaturalidad del mejor nivel (1 = tan natural como el corpus VGLC):\n");
+    for (n, g) in names.iter().zip(&groups) {
+        let s = stats::summary(g);
+        let _ = writeln!(
+            rep,
+            "  {n}: mediana {:.3} [{:.3}; {:.3}]",
+            s.median, s.q1, s.q3
+        );
+    }
+    if groups.len() == 2 {
+        let mw = stats::mann_whitney(&groups[1], &groups[0]);
+        let a = stats::a12(&groups[1], &groups[0]);
+        let _ = writeln!(
+            rep,
+            "  {} vs {}: p = {:.3e}, Â12 = {a:.3} ({})",
+            names[1],
+            names[0],
+            mw.p,
+            stats::a12_magnitude(a)
+        );
+    }
+    rep
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -768,8 +861,8 @@ mod tests {
             ..GaConfig::default()
         };
         let v = define("e1", &base).expect("definido");
-        let a = run_all(&v, 2, 1, |_, _| {});
-        let b = run_all(&v, 2, 3, |_, _| {});
+        let a = run_all(&v, 2, 1, None, |_, _| {});
+        let b = run_all(&v, 2, 3, None, |_, _| {});
         let fa: Vec<f64> = a.iter().map(|r| r.best).collect();
         let fb: Vec<f64> = b.iter().map(|r| r.best).collect();
         assert_eq!(fa, fb);
