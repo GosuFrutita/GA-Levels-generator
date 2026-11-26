@@ -17,6 +17,9 @@ USO:
                                       anima en la terminal el camino óptimo
   nivelga dibujar <nivel.txt> <salida.png> [--escala 2]
   nivelga comprobar <nivel.txt>       analiza jugabilidad y métricas
+  nivelga experimento <e1..e10|todos> [--repeticiones 30] [--salida DIR]
+                                      [opciones de la configuración base]
+  nivelga experimentos                lista los experimentos disponibles
 
 OPCIONES DE `evolucionar`:
   --semilla N          semilla (0)
@@ -69,6 +72,57 @@ fn evolucionar(mut args: Args) -> Result<()> {
     );
     println!("{}", report::describe(&result.best_eval));
     println!("resultados en {}", out.display());
+    Ok(())
+}
+
+fn experimento(mut args: Args) -> Result<()> {
+    use nivelga::experiment;
+    let which = args
+        .positional
+        .first()
+        .cloned()
+        .ok_or_else(|| Error::Config("indica el experimento (e1..e10 o todos)".into()))?;
+    let runs = args.get("repeticiones", 30_u64)?;
+    let threads = ga::effective_threads(args.get("hilos-experimento", 0_usize)?);
+    let out = PathBuf::from(
+        args.take("salida")
+            .unwrap_or_else(|| "resultados/experimentos".into()),
+    );
+    let base = cli::ga_config(&mut args)?;
+    args.finish()?;
+    let names: Vec<&str> = if which == "todos" {
+        experiment::EXPERIMENTS.iter().map(|e| e.0).collect()
+    } else {
+        vec![which.as_str()]
+    };
+    for name in names {
+        let variants = experiment::define(name, &base)?;
+        let title = experiment::EXPERIMENTS
+            .iter()
+            .find(|e| e.0 == name)
+            .map_or(name, |e| e.1);
+        eprintln!(
+            "{name}: {title} ({} variantes × {runs} semillas, {threads} hilos)",
+            variants.len()
+        );
+        let t0 = std::time::Instant::now();
+        let results = experiment::run_all(&variants, runs, threads, |k, total| {
+            if k % 10 == 0 || k == total {
+                eprint!("\r  {k}/{total} ejecuciones");
+            }
+        });
+        eprintln!(" en {:.1} s", t0.elapsed().as_secs_f64());
+        let dir = out.join(name);
+        let mut rep = experiment::analyze(&dir, title, &variants, &results)?;
+        if name == "e5" {
+            experiment::e5_heatmap(&dir, &variants, &results)?;
+        }
+        if name == "e9" {
+            rep.push_str(&experiment::e9_expressive_range(&dir, &results)?);
+            std::fs::write(dir.join("informe.txt"), &rep)?;
+        }
+        println!("{rep}");
+    }
     Ok(())
 }
 
@@ -137,6 +191,13 @@ fn main() -> Result<()> {
         "ver" => ver(args),
         "dibujar" => dibujar(args),
         "comprobar" => comprobar(&args),
+        "experimento" => experimento(args),
+        "experimentos" => {
+            for (n, d) in nivelga::experiment::EXPERIMENTS {
+                println!("{n:4}  {d}");
+            }
+            Ok(())
+        }
         "" | "ayuda" | "--help" | "-h" => {
             print!("{AYUDA}");
             Ok(())

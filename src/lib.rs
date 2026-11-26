@@ -9,8 +9,10 @@
 //! operadores genéticos, estadística y visualización.
 
 pub mod ansi;
+pub mod baselines;
 pub mod cli;
 pub mod error;
+pub mod experiment;
 pub mod fitness;
 pub mod ga;
 pub mod image;
