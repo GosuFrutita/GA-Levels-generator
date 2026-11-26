@@ -1,12 +1,15 @@
 //! Interfaz de línea de órdenes de `nivelga`.
 
 use nivelga::cli::{self, Args};
+use nivelga::fitness::{Extras, Scorer};
 use nivelga::ga;
 use nivelga::level::Level;
 use nivelga::naturalness::NaturalnessModel;
 use nivelga::play::{Checker, PlayScratch};
 use nivelga::render::Tilesets;
+use nivelga::rl::{self, Agent, PlaytesterScorer};
 use nivelga::{Error, Result, ansi, report};
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 const AYUDA: &str = "\
@@ -21,6 +24,11 @@ USO:
   nivelga experimento <e1..e10|todos> [--repeticiones 30] [--salida DIR]
                                       [opciones de la configuración base]
   nivelga experimentos                lista los experimentos disponibles
+  nivelga entrenar-rl [--pasos 2000000] [--entornos 16] [--ocultas 64,64]
+                      [--salida modelos/agente.rla]
+                                      entrena el agente A2C (cross-entropy ponderada)
+  nivelga jugar <nivel.txt> [--agente modelos/agente.rla]
+                                      anima en la terminal al agente jugando
   nivelga entrenar-nn [--datos data/vglc/smb] [--salida modelos/naturalidad.nng]
                       [--epocas 80] [--ocultas 32] [--lr 0.001] [--suavizado 0.05]
                                       entrena la red de naturalidad (cross-entropy)
@@ -44,6 +52,9 @@ OPCIONES DE `evolucionar`:
   --hilos N            hilos de evaluación (0 = todos)
   --naturalidad RUTA   añade el término de la red de naturalidad
   --peso-nat W         peso de ese término (0.15)
+  --agente RUTA        añade la dificultad empírica del agente de RL
+  --peso-agente W      peso de ese término (0.15)
+  --objetivo-victorias tasa de victorias objetivo del agente (0.6)
   --salida DIR         directorio de resultados (resultados/<semilla>)
   --recursos DIR       directorio de tilesets (assets)
 ";
@@ -55,15 +66,17 @@ fn evolucionar(mut args: Args) -> Result<()> {
             .unwrap_or_else(|| format!("resultados/semilla_{}", cfg.seed)),
     );
     let assets = PathBuf::from(args.take("recursos").unwrap_or_else(|| "assets".into()));
-    let model = load_model(&mut args)?;
+    let ext = Externals::load(&mut args)?;
     let mut cfg = cfg;
-    if model.is_some() {
+    if ext.model.is_some() {
         cfg.fitness.weights.naturalness = args.get("peso-nat", 0.15)?;
+    }
+    if ext.agent.is_some() {
+        cfg.fitness.weights.playtester = args.get("peso-agente", 0.15)?;
     }
     args.finish()?;
     let checker = Checker::default();
-    let scorer = model.as_ref().map(|m| m as &dyn nivelga::fitness::Scorer);
-    let result = ga::run(&cfg, &checker, scorer, |s, _, _| {
+    let result = ga::run(&cfg, &checker, ext.extras(), |s, _, _| {
         if s.generation % 10 == 0 || s.generation == cfg.generations {
             eprintln!(
                 "gen {:4} | mejor {:.4} | media {:.4} | jugables {:5.1}% | diversidad {:.3} | estilos {:?}",
@@ -87,11 +100,38 @@ fn evolucionar(mut args: Args) -> Result<()> {
     Ok(())
 }
 
-/// Carga el modelo de naturalidad si se pasó `--naturalidad RUTA`.
-fn load_model(args: &mut Args) -> Result<Option<NaturalnessModel>> {
-    args.take("naturalidad")
-        .map(|p| NaturalnessModel::from_bytes(&std::fs::read(p)?))
-        .transpose()
+/// Modelos externos opcionales: la red de naturalidad (`--naturalidad RUTA`)
+/// y el agente probador de RL (`--agente RUTA`).
+struct Externals {
+    model: Option<NaturalnessModel>,
+    agent: Option<PlaytesterScorer>,
+}
+
+impl Externals {
+    fn load(args: &mut Args) -> Result<Self> {
+        let model = args
+            .take("naturalidad")
+            .map(|p| NaturalnessModel::from_bytes(&std::fs::read(p)?))
+            .transpose()?;
+        let agent = match args.take("agente") {
+            None => None,
+            Some(p) => Some(PlaytesterScorer {
+                agent: Agent::from_bytes(&std::fs::read(p)?)?,
+                checker: Checker::default(),
+                episodes: args.get("episodios", 4_usize)?,
+                target: args.get("objetivo-victorias", 0.6)?,
+                sigma: 0.2,
+            }),
+        };
+        Ok(Self { model, agent })
+    }
+
+    fn extras(&self) -> Extras<'_> {
+        Extras {
+            naturalness: self.model.as_ref().map(|m| m as &dyn Scorer),
+            playtester: self.agent.as_ref().map(|a| a as &dyn Scorer),
+        }
+    }
 }
 
 /// Guarda el historial del entrenamiento en CSV y su curva en SVG.
@@ -213,6 +253,199 @@ fn entrenar_nn(mut args: Args) -> Result<()> {
     Ok(())
 }
 
+/// Construye el currículo del agente: poblaciones finales de varias
+/// ejecuciones del GA más niveles aleatorios. Devuelve `(entrenamiento, prueba)`.
+fn rl_pool(width: usize, seeds: u64) -> (Vec<Level>, Vec<Level>) {
+    let checker = Checker::default();
+    let mut train = Vec::new();
+    let mut test = Vec::new();
+    for seed in 0..seeds {
+        let cfg = ga::GaConfig {
+            seed: 1000 + seed,
+            width,
+            generations: 60,
+            ..ga::GaConfig::default()
+        };
+        let r = ga::run(&cfg, &checker, Extras::default(), |_, _, _| {});
+        // Una de cada cuatro ejecuciones se reserva para la prueba.
+        let dest = if seed % 4 == 3 { &mut test } else { &mut train };
+        dest.extend(r.final_population.into_iter().map(|(l, _)| l));
+    }
+    let mut rng = nivelga::rng::Rng::seed_from_u64(77);
+    for i in 0..(seeds as usize * 50) {
+        let l = ga::init::random_level(width, &mut rng);
+        if i % 4 == 3 {
+            test.push(l);
+        } else {
+            train.push(l);
+        }
+    }
+    (train, test)
+}
+
+fn entrenar_rl(mut args: Args) -> Result<()> {
+    let d = rl::A2cConfig::default();
+    let hidden = match args.take("ocultas") {
+        Some(h) => h
+            .split(',')
+            .map(|v| {
+                v.trim()
+                    .parse()
+                    .map_err(|_| Error::Config(format!("capa oculta inválida «{v}»")))
+            })
+            .collect::<Result<Vec<usize>>>()?,
+        None => d.hidden.clone(),
+    };
+    let cfg = rl::A2cConfig {
+        envs: args.get("entornos", d.envs)?,
+        t_max: args.get("tmax", d.t_max)?,
+        gamma: args.get("gamma", d.gamma)?,
+        entropy: args.get("entropia", d.entropy)?,
+        lr: args.get("lr", d.lr)?,
+        total_steps: args.get("pasos", d.total_steps)?,
+        seed: args.get("semilla", d.seed)?,
+        hidden,
+        ..d
+    };
+    let width = args.get("ancho", 60_usize)?;
+    let seeds = args.get("ejecuciones-ga", 8_u64)?;
+    let out = PathBuf::from(
+        args.take("salida")
+            .unwrap_or_else(|| "modelos/agente.rla".into()),
+    );
+    args.finish()?;
+    eprintln!("generando currículo con {seeds} ejecuciones del GA (ancho {width})...");
+    let (train, test) = rl_pool(width, seeds);
+    eprintln!(
+        "{} niveles de entrenamiento y {} de prueba",
+        train.len(),
+        test.len()
+    );
+    let checker = Checker::default();
+    let t0 = std::time::Instant::now();
+    let (agent, history) = rl::train(&train, &checker, &cfg, |l| {
+        eprintln!(
+            "pasos {:8} | episodios {:5} | victorias {:5.1}% | progreso {:5.1}% | retorno {:+.3} | entropía {:.3}",
+            l.steps,
+            l.episodes,
+            100.0 * l.win_rate,
+            100.0 * l.progress,
+            l.ret,
+            l.entropy
+        );
+    });
+    eprintln!("entrenamiento: {:.1} s", t0.elapsed().as_secs_f64());
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&out, agent.to_bytes())?;
+    let mut csv = String::from("pasos,episodios,victorias,progreso,retorno,entropia\n");
+    for l in &history {
+        let _ = writeln!(
+            csv,
+            "{},{},{:.4},{:.4},{:.4},{:.4}",
+            l.steps, l.episodes, l.win_rate, l.progress, l.ret, l.entropy
+        );
+    }
+    std::fs::write(out.with_extension("csv"), csv)?;
+    let line = |name: &str, f: &dyn Fn(&rl::TrainLog) -> f64| nivelga::plot::Series {
+        name: name.into(),
+        points: history.iter().map(|l| (l.steps as f64, f(l))).collect(),
+        band: vec![],
+    };
+    std::fs::write(
+        out.with_extension("svg"),
+        nivelga::plot::line_chart(
+            "Agente A2C: aprendizaje",
+            "pasos de entorno",
+            "fracción",
+            &[
+                line("victorias", &|l| l.win_rate),
+                line("progreso", &|l| l.progress),
+                line("entropía / ln 13", &|l| l.entropy / 13f64.ln()),
+            ],
+        ),
+    )?;
+    println!("{}", playtester_report(&agent, &test, &checker, cfg.seed));
+    println!(
+        "agente guardado en {} ({} parámetros)",
+        out.display(),
+        agent.net.num_params()
+    );
+    Ok(())
+}
+
+/// Evalúa el agente como probador en los niveles de prueba.
+fn playtester_report(agent: &Agent, test: &[Level], checker: &Checker, seed: u64) -> String {
+    let cfg = nivelga::fitness::FitnessConfig::default();
+    let mut ev = nivelga::fitness::Evaluator::new(checker, &cfg);
+    let untrained = Agent::new(
+        agent.net.spec().hidden.clone(),
+        &mut nivelga::rng::Rng::seed_from_u64(seed + 99),
+    );
+    let (mut wins, mut wins_base, mut solvable, mut false_wins) = (0.0, 0.0, 0, 0);
+    let (mut rates, mut diffs) = (Vec::new(), Vec::new());
+    for l in test {
+        let e = ev.evaluate(l, Extras::default());
+        let t = rl::playtest(agent, l, checker, 10, seed);
+        let b = rl::playtest(&untrained, l, checker, 10, seed);
+        wins += t.win_rate;
+        wins_base += b.win_rate;
+        if e.feasible {
+            solvable += 1;
+            rates.push(t.win_rate);
+            diffs.push(e.difficulty);
+        } else if t.win_rate > 0.0 {
+            false_wins += 1;
+        }
+    }
+    let n = test.len().max(1) as f64;
+    let solved_rate = rates.iter().sum::<f64>() / rates.len().max(1) as f64;
+    format!(
+        "Prueba en {} niveles nuevos ({solvable} jugables según el BFS):\n         victorias del agente entrenado: {:.1} % (sin entrenar: {:.1} %)\n         victorias en los niveles jugables: {:.1} %\n         niveles injugables que el agente ganó (debe ser 0): {false_wins}\n         Spearman(victorias del agente, dificultad D) en jugables: {:.3}",
+        test.len(),
+        100.0 * wins / n,
+        100.0 * wins_base / n,
+        100.0 * solved_rate,
+        nivelga::stats::spearman(&rates, &diffs)
+    )
+}
+
+fn jugar(mut args: Args) -> Result<()> {
+    let level = load_level(&args)?;
+    let path = args
+        .take("agente")
+        .unwrap_or_else(|| "modelos/agente.rla".into());
+    let cols = args.get("columnas", 60_usize)?;
+    let delay = args.get("retardo", 80_u64)?;
+    let seed = args.get("semilla", 0_u64)?;
+    let assets = args.take("recursos").unwrap_or_else(|| "assets".into());
+    args.finish()?;
+    let agent = Agent::from_bytes(&std::fs::read(path)?)?;
+    let checker = Checker::default();
+    let (traj, won) = agent.trajectory(
+        &level,
+        &checker,
+        &mut nivelga::rng::Rng::seed_from_u64(seed),
+    );
+    ansi::animate(
+        &level,
+        &Tilesets::load(assets)?,
+        &traj,
+        cols.min(level.width()),
+        delay,
+    )?;
+    println!(
+        "{}",
+        if won {
+            "el agente llegó a la meta"
+        } else {
+            "el agente no llegó a la meta"
+        }
+    );
+    Ok(())
+}
+
 fn experimento(mut args: Args) -> Result<()> {
     use nivelga::experiment;
     let which = args
@@ -227,9 +460,9 @@ fn experimento(mut args: Args) -> Result<()> {
             .unwrap_or_else(|| "resultados/experimentos".into()),
     );
     let base = cli::ga_config(&mut args)?;
-    let model = load_model(&mut args)?;
+    let ext = Externals::load(&mut args)?;
     args.finish()?;
-    let scorer = model.as_ref().map(|m| m as &dyn nivelga::fitness::Scorer);
+    let scorer = ext.model.as_ref().map(|m| m as &dyn Scorer);
     let names: Vec<&str> = if which == "todos" {
         experiment::EXPERIMENTS.iter().map(|e| e.0).collect()
     } else {
@@ -250,7 +483,7 @@ fn experimento(mut args: Args) -> Result<()> {
             variants.len()
         );
         let t0 = std::time::Instant::now();
-        let results = experiment::run_all(&variants, runs, threads, scorer, |k, total| {
+        let results = experiment::run_all(&variants, runs, threads, ext.extras(), |k, total| {
             if k % 10 == 0 || k == total {
                 eprint!("\r  {k}/{total} ejecuciones");
             }
@@ -324,13 +557,25 @@ fn dibujar(mut args: Args) -> Result<()> {
     nivelga::image::png::save(&img, out)
 }
 
-fn comprobar(args: &Args) -> Result<()> {
-    let level = load_level(args)?;
+fn comprobar(mut args: Args) -> Result<()> {
+    let level = load_level(&args)?;
+    let ext = Externals::load(&mut args)?;
     args.finish()?;
     let checker = Checker::default();
-    let cfg = nivelga::fitness::FitnessConfig::default();
+    let mut cfg = nivelga::fitness::FitnessConfig::default();
+    cfg.weights.naturalness = if ext.model.is_some() { 0.15 } else { 0.0 };
+    cfg.weights.playtester = if ext.agent.is_some() { 0.15 } else { 0.0 };
     let mut ev = nivelga::fitness::Evaluator::new(&checker, &cfg);
-    println!("{}", report::describe(&ev.evaluate(&level, None)));
+    println!("{}", report::describe(&ev.evaluate(&level, ext.extras())));
+    if let Some(a) = &ext.agent {
+        let t = rl::playtest(&a.agent, &level, &checker, 20, 0);
+        println!(
+            "agente: victorias {:.0} %, progreso medio {:.0} %, pasos medios {:.0}",
+            100.0 * t.win_rate,
+            100.0 * t.progress,
+            t.steps
+        );
+    }
     Ok(())
 }
 
@@ -340,9 +585,11 @@ fn main() -> Result<()> {
         "evolucionar" => evolucionar(args),
         "ver" => ver(args),
         "dibujar" => dibujar(args),
-        "comprobar" => comprobar(&args),
+        "comprobar" => comprobar(args),
         "experimento" => experimento(args),
         "entrenar-nn" => entrenar_nn(args),
+        "entrenar-rl" => entrenar_rl(args),
+        "jugar" => jugar(args),
         "experimentos" => {
             for (n, d) in nivelga::experiment::EXPERIMENTS {
                 println!("{n:4}  {d}");

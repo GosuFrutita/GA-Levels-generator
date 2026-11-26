@@ -16,7 +16,7 @@ pub mod init;
 pub mod selection;
 pub mod variation;
 
-use crate::fitness::{Aggregation, Evaluation, Evaluator, FitnessConfig, Scorer};
+use crate::fitness::{Aggregation, Evaluation, Evaluator, Extras, FitnessConfig};
 use crate::level::{HEIGHT, Level, SAFE_COLS, Style, Tile};
 use crate::play::Checker;
 use crate::rng::Rng;
@@ -157,13 +157,13 @@ pub fn evaluate_all(
     levels: &[Level],
     out: &mut [Evaluation],
     evaluators: &mut [Evaluator<'_>],
-    scorer: Option<&dyn Scorer>,
+    extras: Extras<'_>,
 ) {
     debug_assert_eq!(levels.len(), out.len());
     let per = levels.len().div_ceil(evaluators.len()).max(1);
     if evaluators.len() == 1 || levels.len() < 8 {
         for (l, o) in levels.iter().zip(out.iter_mut()) {
-            *o = evaluators[0].evaluate(l, scorer);
+            *o = evaluators[0].evaluate(l, extras);
         }
         return;
     }
@@ -175,7 +175,7 @@ pub fn evaluate_all(
         {
             s.spawn(move || {
                 for (l, o) in ls.iter().zip(os.iter_mut()) {
-                    *o = ev.evaluate(l, scorer);
+                    *o = ev.evaluate(l, extras);
                 }
             });
         }
@@ -404,7 +404,7 @@ impl Engine<'_> {
 pub fn run(
     cfg: &GaConfig,
     checker: &Checker,
-    scorer: Option<&dyn Scorer>,
+    extras: Extras<'_>,
     mut observer: impl FnMut(&GenStats, &[Level], &[Evaluation]),
 ) -> RunResult {
     assert!(
@@ -422,7 +422,7 @@ pub fn run(
         .map(|_| init::random_level(cfg.width, &mut rng))
         .collect();
     let mut evals = vec![Evaluation::default(); n];
-    evaluate_all(&pop, &mut evals, &mut evaluators, scorer);
+    evaluate_all(&pop, &mut evals, &mut evaluators, extras);
     let mut e = Engine {
         cfg,
         rng,
@@ -475,7 +475,7 @@ pub fn run(
         // 4. Evaluación paralela de los hijos.
         let (_, children) = e.next.split_at(cfg.elitism);
         let (_, child_evals) = e.next_evals.split_at_mut(cfg.elitism);
-        evaluate_all(children, child_evals, &mut evaluators, scorer);
+        evaluate_all(children, child_evals, &mut evaluators, extras);
         evaluations += n - cfg.elitism;
         // Crédito para el bandido: mejora relativa del hijo sobre el mejor padre.
         if cfg.operator_control == OperatorControl::Bandit {
@@ -527,8 +527,8 @@ mod tests {
     #[test]
     fn determinista_con_cualquier_numero_de_hilos() {
         let checker = Checker::default();
-        let a = run(&small(7, 1), &checker, None, |_, _, _| {});
-        let b = run(&small(7, 4), &checker, None, |_, _, _| {});
+        let a = run(&small(7, 1), &checker, Extras::default(), |_, _, _| {});
+        let b = run(&small(7, 4), &checker, Extras::default(), |_, _, _| {});
         assert_eq!(a.history, b.history);
         assert_eq!(a.best, b.best);
     }
@@ -536,7 +536,7 @@ mod tests {
     #[test]
     fn elitismo_hace_monotono_el_mejor() {
         let checker = Checker::default();
-        let r = run(&small(3, 2), &checker, None, |_, _, _| {});
+        let r = run(&small(3, 2), &checker, Extras::default(), |_, _, _| {});
         for w in r.history.windows(2) {
             assert!(w[1].best >= w[0].best - 1e-12);
         }
@@ -566,7 +566,7 @@ mod tests {
                 operator_control: OperatorControl::Bandit,
                 ..small(1, 2)
             };
-            let r = run(&cfg, &checker, None, |_, _, _| {});
+            let r = run(&cfg, &checker, Extras::default(), |_, _, _| {});
             assert!(r.best_eval.fitness > 0.0);
         }
     }

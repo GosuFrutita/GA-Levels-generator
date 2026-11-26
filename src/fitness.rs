@@ -41,6 +41,8 @@ pub struct Weights {
     pub coherence: f64,
     /// Peso de la naturalidad (modelo neuronal); 0 si no se usa.
     pub naturalness: f64,
+    /// Peso de la dificultad empírica del agente de RL; 0 si no se usa.
+    pub playtester: f64,
 }
 
 impl Default for Weights {
@@ -50,6 +52,7 @@ impl Default for Weights {
             variety: 0.35,
             coherence: 0.30,
             naturalness: 0.0,
+            playtester: 0.0,
         }
     }
 }
@@ -98,6 +101,8 @@ pub struct Evaluation {
     pub style_fit: f64,
     /// Naturalidad según el modelo neuronal (1 si no se usa).
     pub naturalness: f64,
+    /// Puntuación del agente probador de RL (1 si no se usa).
+    pub playtester: f64,
     /// Rasgos medidos.
     pub features: Features,
 }
@@ -121,6 +126,24 @@ impl Evaluation {
 pub trait Scorer: Sync {
     /// Puntúa un nivel.
     fn score(&self, level: &Level) -> f64;
+}
+
+/// Puntuaciones externas opcionales que entran en la aptitud.
+#[derive(Clone, Copy, Default)]
+pub struct Extras<'a> {
+    /// Modelo de naturalidad (red con cross-entropy).
+    pub naturalness: Option<&'a dyn Scorer>,
+    /// Agente probador de aprendizaje por refuerzo.
+    pub playtester: Option<&'a dyn Scorer>,
+}
+
+impl std::fmt::Debug for Extras<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Extras")
+            .field("naturalness", &self.naturalness.is_some())
+            .field("playtester", &self.playtester.is_some())
+            .finish()
+    }
 }
 
 /// Evaluador con memoria de trabajo propia (uno por hilo).
@@ -149,7 +172,7 @@ impl<'a> Evaluator<'a> {
     }
 
     /// Evalúa un nivel por completo.
-    pub fn evaluate(&mut self, level: &Level, scorer: Option<&dyn Scorer>) -> Evaluation {
+    pub fn evaluate(&mut self, level: &Level, extras: Extras<'_>) -> Evaluation {
         let play = self.checker.check(level, &mut self.play);
         let features = Features::compute(level, &play, &self.play, &mut self.metrics);
         let cfg = self.config;
@@ -161,15 +184,18 @@ impl<'a> Evaluator<'a> {
         let var = metrics::variety(&features, t);
         let coh = metrics::coherence(&features, level.style);
         let fit = metrics::style_fit(&features, level.style);
-        let nat = match scorer {
-            Some(s) if w.naturalness > 0.0 => s.score(level).clamp(0.0, 1.0),
+        let external = |scorer: Option<&dyn Scorer>, weight: f64| match scorer {
+            Some(sc) if weight > 0.0 => sc.score(level).clamp(0.0, 1.0),
             _ => 1.0,
         };
+        let nat = external(extras.naturalness, w.naturalness);
+        let agent = external(extras.playtester, w.playtester);
         let parts = [
             (w.difficulty, f_dif),
             (w.variety, var),
             (w.coherence, coh),
             (w.naturalness, nat),
+            (w.playtester, agent),
         ];
         let wsum: f64 = parts.iter().map(|p| p.0).sum();
         let quality = match cfg.aggregation {
@@ -201,6 +227,7 @@ impl<'a> Evaluator<'a> {
             coherence: coh,
             style_fit: fit,
             naturalness: nat,
+            playtester: agent,
             features,
         }
     }
@@ -236,8 +263,8 @@ mod tests {
                 ..FitnessConfig::default()
             };
             let mut ev = Evaluator::new(&checker, &cfg);
-            let good = ev.evaluate(&flat(64, true), None);
-            let bad = ev.evaluate(&flat(64, false), None);
+            let good = ev.evaluate(&flat(64, true), Extras::default());
+            let bad = ev.evaluate(&flat(64, false), Extras::default());
             assert!(good.feasible && !bad.feasible);
             assert!(good.fitness > bad.fitness, "{agg:?}");
             assert!(bad.fitness > 0.0 && good.fitness <= 1.0);

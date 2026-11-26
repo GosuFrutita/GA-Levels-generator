@@ -7,7 +7,7 @@
 
 use crate::baselines::{one_plus_one, random_search};
 use crate::error::{Error, Result};
-use crate::fitness::{Aggregation, Evaluation, Scorer};
+use crate::fitness::{Aggregation, Evaluation, Extras, Scorer};
 use crate::ga::selection::{Scaling, Selection};
 use crate::ga::variation::Crossover;
 use crate::ga::{self, GaConfig, OperatorControl};
@@ -75,14 +75,14 @@ pub fn run_variant(
     v: &Variant,
     seed: u64,
     checker: &Checker,
-    scorer: Option<&dyn Scorer>,
+    extras: Extras<'_>,
 ) -> RunSummary {
     let cfg = GaConfig {
         seed,
         threads: 1,
         ..v.config.clone()
     };
-    let mut r = run_variant_raw(index, v, &cfg, checker, scorer);
+    let mut r = run_variant_raw(index, v, &cfg, checker, extras);
     // Misma resolución para todos los algoritmos: el primer lote cuya mejor
     // aptitud indica un nivel jugable (los jugables valen al menos 0,1).
     r.first_feasible = r
@@ -99,12 +99,12 @@ fn run_variant_raw(
     v: &Variant,
     cfg: &GaConfig,
     checker: &Checker,
-    scorer: Option<&dyn Scorer>,
+    extras: Extras<'_>,
 ) -> RunSummary {
     let seed = cfg.seed;
     match v.algorithm {
         Algorithm::Ga => {
-            let r = ga::run(cfg, checker, scorer, |_, _, _| {});
+            let r = ga::run(cfg, checker, extras, |_, _, _| {});
             let first_feasible = r
                 .history
                 .iter()
@@ -133,9 +133,9 @@ fn run_variant_raw(
         }
         Algorithm::Random | Algorithm::OnePlusOne => {
             let r = if v.algorithm == Algorithm::Random {
-                random_search(cfg, checker, scorer)
+                random_search(cfg, checker, extras)
             } else {
-                one_plus_one(cfg, checker, scorer)
+                one_plus_one(cfg, checker, extras)
             };
             RunSummary {
                 variant: index,
@@ -164,7 +164,7 @@ pub fn run_all(
     variants: &[Variant],
     runs: u64,
     threads: usize,
-    scorer: Option<&dyn Scorer>,
+    extras: Extras<'_>,
     progress: impl Fn(usize, usize) + Sync,
 ) -> Vec<RunSummary> {
     let jobs: Vec<(usize, u64)> = (0..variants.len())
@@ -186,7 +186,7 @@ pub fn run_all(
                         .skip(t)
                         .step_by(threads)
                         .map(|(i, &(v, seed))| {
-                            let r = run_variant(v, &variants[v], seed, &checker, scorer);
+                            let r = run_variant(v, &variants[v], seed, &checker, extras);
                             let k = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                             progress(k, total);
                             (i, r)
@@ -861,8 +861,8 @@ mod tests {
             ..GaConfig::default()
         };
         let v = define("e1", &base).expect("definido");
-        let a = run_all(&v, 2, 1, None, |_, _| {});
-        let b = run_all(&v, 2, 3, None, |_, _| {});
+        let a = run_all(&v, 2, 1, Extras::default(), |_, _| {});
+        let b = run_all(&v, 2, 3, Extras::default(), |_, _| {});
         let fa: Vec<f64> = a.iter().map(|r| r.best).collect();
         let fb: Vec<f64> = b.iter().map(|r| r.best).collect();
         assert_eq!(fa, fb);

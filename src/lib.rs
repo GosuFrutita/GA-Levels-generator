@@ -24,6 +24,7 @@ pub mod play;
 pub mod plot;
 pub mod render;
 pub mod report;
+pub mod rl;
 pub mod rng;
 pub mod stats;
 pub mod vglc;

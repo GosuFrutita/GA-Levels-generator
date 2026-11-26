@@ -304,6 +304,22 @@ pub fn friedman(data: &[Vec<f64>]) -> (f64, f64, Vec<f64>) {
     (chi2, chi2_sf(chi2, kf - 1.0), mean_ranks)
 }
 
+/// Correlación de rangos de Spearman (Pearson sobre rangos promedio).
+pub fn spearman(a: &[f64], b: &[f64]) -> f64 {
+    let (ra, _) = ranks(a);
+    let (rb, _) = ranks(b);
+    let n = ra.len() as f64;
+    let (ma, mb) = (ra.iter().sum::<f64>() / n, rb.iter().sum::<f64>() / n);
+    let cov: f64 = ra.iter().zip(&rb).map(|(x, y)| (x - ma) * (y - mb)).sum();
+    let va: f64 = ra.iter().map(|x| (x - ma).powi(2)).sum();
+    let vb: f64 = rb.iter().map(|y| (y - mb).powi(2)).sum();
+    if va == 0.0 || vb == 0.0 {
+        0.0
+    } else {
+        cov / (va * vb).sqrt()
+    }
+}
+
 /// Valores p ajustados por el método de Holm (paso descendente).
 pub fn holm(p: &[f64]) -> Vec<f64> {
     let m = p.len();
@@ -362,6 +378,13 @@ mod tests {
         let (chi2, p, _) = friedman(&data);
         assert!(close(chi2, 3.5, 1e-12), "{chi2}");
         assert!(close(p, 0.173_773_943_450_445_04, 1e-9), "{p}");
+    }
+
+    #[test]
+    fn spearman_monotona() {
+        let a = [1.0, 2.0, 3.0, 4.0];
+        assert!(close(spearman(&a, &[10.0, 20.0, 25.0, 100.0]), 1.0, 1e-12));
+        assert!(close(spearman(&a, &[4.0, 3.0, 2.0, 1.0]), -1.0, 1e-12));
     }
 
     #[test]

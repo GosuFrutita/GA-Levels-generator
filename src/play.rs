@@ -285,7 +285,7 @@ impl Checker {
 
     /// Cae en vertical desde `(x, y)` (celda ya atravesable) hasta reposar.
     /// Devuelve la celda de reposo o `None` si muere (foso o peligro).
-    fn fall(
+    pub(crate) fn fall(
         level: &Level,
         x: i32,
         mut y: i32,
@@ -307,7 +307,7 @@ impl Checker {
     }
 
     /// Recorre un arco desde `(x, y)`; devuelve dónde aterriza.
-    fn follow_arc(
+    pub(crate) fn follow_arc(
         level: &Level,
         arc: &JumpArc,
         x: i32,

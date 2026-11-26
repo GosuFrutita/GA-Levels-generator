@@ -5,7 +5,7 @@
 //! GA (`N` al inicio y `N − E` después), así las curvas de convergencia se
 //! comparan punto a punto.
 
-use crate::fitness::{Evaluation, Evaluator, Scorer};
+use crate::fitness::{Evaluation, Evaluator, Extras};
 use crate::ga::{GaConfig, init, variation};
 use crate::level::{HEIGHT, Level, SAFE_COLS};
 use crate::play::Checker;
@@ -87,11 +87,7 @@ fn tracker() -> Tracker {
 }
 
 /// Búsqueda aleatoria con el generador constructivo de la población inicial.
-pub fn random_search(
-    cfg: &GaConfig,
-    checker: &Checker,
-    scorer: Option<&dyn Scorer>,
-) -> BaselineResult {
+pub fn random_search(cfg: &GaConfig, checker: &Checker, extras: Extras<'_>) -> BaselineResult {
     let t0 = Instant::now();
     let mut rng = Rng::seed_from_u64(cfg.seed);
     let mut ev = Evaluator::new(checker, &cfg.fitness);
@@ -104,7 +100,7 @@ pub fn random_search(
         };
         for _ in 0..batch {
             let l = init::random_level(cfg.width, &mut rng);
-            let e = ev.evaluate(&l, scorer);
+            let e = ev.evaluate(&l, extras);
             t.offer(&l, e);
         }
         t.mark();
@@ -114,18 +110,14 @@ pub fn random_search(
 
 /// (1+1)-EA: un padre, un hijo por evaluación con los mismos operadores de
 /// mutación que el GA; el hijo reemplaza al padre si no es peor.
-pub fn one_plus_one(
-    cfg: &GaConfig,
-    checker: &Checker,
-    scorer: Option<&dyn Scorer>,
-) -> BaselineResult {
+pub fn one_plus_one(cfg: &GaConfig, checker: &Checker, extras: Extras<'_>) -> BaselineResult {
     let t0 = Instant::now();
     let mut rng = Rng::seed_from_u64(cfg.seed);
     let mut ev = Evaluator::new(checker, &cfg.fitness);
     let mut t = tracker();
     let cells = ((cfg.width - 2 * SAFE_COLS) * HEIGHT) as f64;
     let mut parent = init::random_level(cfg.width, &mut rng);
-    let mut parent_eval = ev.evaluate(&parent, scorer);
+    let mut parent_eval = ev.evaluate(&parent, extras);
     t.offer(&parent, parent_eval.clone());
     let mut child = parent.clone();
     for g in 0..=cfg.generations {
@@ -145,7 +137,7 @@ pub fn one_plus_one(
                 variation::style_mutation(&mut child, &mut rng);
             }
             init::repair(&mut child, cfg.repair);
-            let e = ev.evaluate(&child, scorer);
+            let e = ev.evaluate(&child, extras);
             t.offer(&child, e.clone());
             if e.fitness >= parent_eval.fitness {
                 std::mem::swap(&mut parent, &mut child);
@@ -172,9 +164,9 @@ mod tests {
         };
         let checker = Checker::default();
         let budget = 20 + 5 * 18;
-        let r = random_search(&cfg, &checker, None);
+        let r = random_search(&cfg, &checker, Extras::default());
         assert_eq!(r.evaluations.last(), Some(&budget));
-        let o = one_plus_one(&cfg, &checker, None);
+        let o = one_plus_one(&cfg, &checker, Extras::default());
         assert_eq!(o.evaluations.last(), Some(&budget));
         // La curva del mejor histórico es monótona.
         assert!(o.curve.windows(2).all(|w| w[1] >= w[0]));

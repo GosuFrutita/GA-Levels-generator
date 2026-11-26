@@ -4,7 +4,7 @@
 //!
 //! Ejecutar con `cargo bench --bench evaluacion`.
 
-use nivelga::fitness::{Evaluator, FitnessConfig, Scorer};
+use nivelga::fitness::{Evaluator, Extras, FitnessConfig, Scorer};
 use nivelga::ga::init::random_level;
 use nivelga::ga::selection::{Scaling, roulette, scale, sus};
 use nivelga::level::Level;
@@ -51,7 +51,7 @@ fn main() {
         black_box(Features::compute(l, p, &scratch, &mut ms));
     });
     bench("evaluación completa", &levels, 9, |l| {
-        black_box(ev.evaluate(l, None));
+        black_box(ev.evaluate(l, Extras::default()));
     });
     if let Ok(bytes) = std::fs::read("modelos/naturalidad.nng")
         && let Ok(model) = NaturalnessModel::from_bytes(&bytes)
