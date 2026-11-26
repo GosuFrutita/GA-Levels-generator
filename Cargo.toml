@@ -1,0 +1,40 @@
+[package]
+name = "nivelga"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100"
+description = "Algoritmo genético que evoluciona niveles de plataformas 2D y su tileset, hecho a mano en Rust."
+publish = false
+
+[dependencies]
+# Vacío a propósito: todo está implementado a mano.
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Conversiones numéricas deliberadas (índices <-> f64) en código numérico.
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+# Coordenadas de rejilla: siempre caben en i32 (niveles de cientos de columnas).
+cast_possible_wrap = "allow"
+must_use_candidate = "allow"
+# Nombres de una letra (x, y, w, h) son convención en código de rejillas.
+many_single_char_names = "allow"
+similar_names = "allow"
+
+[profile.dev]
+# El GA sin optimizar es exasperantemente lento.
+opt-level = 1
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+panic = "abort"
+
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
