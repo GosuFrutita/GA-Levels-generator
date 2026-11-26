@@ -208,6 +208,16 @@ pub fn ga_config(args: &mut Args) -> Result<GaConfig> {
             _ => return Err(Error::Config(format!("control desconocido: «{s}»"))),
         };
     }
+    if let Some(s) = args.take("nicho") {
+        cfg.niching = match s.split_once(':') {
+            None if s == "ninguno" => crate::ga::Niching::None,
+            None if s == "crowding" => crate::ga::Niching::Crowding,
+            None if s == "crowding-seleccion" => crate::ga::Niching::CrowdingSelective,
+            None if s == "sharing" => crate::ga::Niching::Sharing(0.15),
+            Some(("sharing", v)) => crate::ga::Niching::Sharing(num(v, "sharing")?),
+            _ => return Err(Error::Config(format!("nicho desconocido: «{s}»"))),
+        };
+    }
     let t = &mut cfg.fitness.targets;
     t.difficulty = args.get("dificultad", t.difficulty)?;
     if cfg.population < 2 || cfg.elitism >= cfg.population {

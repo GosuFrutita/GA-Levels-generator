@@ -51,6 +51,7 @@ OPCIONES DE `evolucionar`:
   --elitismo E         élites por generación (2)
   --reparar si|no      reparación completa (si)
   --control C          uniforme | bandido  (operadores macro)
+  --nicho N            ninguno | sharing[:σ] | crowding | crowding-seleccion
   --agregacion A       suma | geometrica | penalizacion:λ | deb  (suma)
   --dificultad D       dificultad objetivo D* (0.5)
   --hilos N            hilos de evaluación (0 = todos)

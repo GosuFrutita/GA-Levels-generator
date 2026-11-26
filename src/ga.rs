@@ -34,6 +34,49 @@ pub enum OperatorControl {
     Bandit,
 }
 
+/// Mecanismo de nichos para mantener la diversidad.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Niching {
+    /// Sin nichos.
+    None,
+    /// *Fitness sharing* (Goldberg y Richardson, 1987): la aptitud usada para
+    /// seleccionar se divide entre el recuento de nicho `Σ sh(d)`, con
+    /// `sh(d) = 1 − d/σ` si `d < σ`.
+    Sharing(f64),
+    /// *Crowding* determinista (Mahfoud, 1992): los padres se emparejan al azar
+    /// y cada hijo compite con el padre más parecido; lo sustituye solo si no
+    /// es peor. Ignora el método de selección configurado.
+    Crowding,
+    /// Variante híbrida: reemplazo por *crowding* pero con los padres elegidos
+    /// por el método de selección configurado (más presión selectiva).
+    CrowdingSelective,
+}
+
+impl Niching {
+    /// Nombre para informes.
+    pub fn name(self) -> String {
+        match self {
+            Self::None => "ninguno".into(),
+            Self::Sharing(s) => format!("sharing-{s}"),
+            Self::Crowding => "crowding".into(),
+            Self::CrowdingSelective => "crowding-seleccion".into(),
+        }
+    }
+}
+
+/// Distancia entre dos niveles en `[0, 1]`: Hamming normalizada de la región
+/// evolutiva (90 %) más la diferencia de estilo (10 %).
+pub fn distance(a: &Level, b: &Level) -> f64 {
+    let r = SAFE_COLS * HEIGHT..(a.width() - SAFE_COLS) * HEIGHT;
+    let cells = r.len().max(1) as f64;
+    let diff = a.tiles()[r.clone()]
+        .iter()
+        .zip(&b.tiles()[r])
+        .filter(|(x, y)| x != y)
+        .count() as f64;
+    0.9 * diff / cells + 0.1 * f64::from(u8::from(a.style != b.style))
+}
+
 /// Configuración del algoritmo genético.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GaConfig {
@@ -63,6 +106,8 @@ pub struct GaConfig {
     pub repair: bool,
     /// Control de operadores macro.
     pub operator_control: OperatorControl,
+    /// Mecanismo de nichos.
+    pub niching: Niching,
     /// Hilos para la evaluación (0 = automático).
     pub threads: usize,
     /// Configuración de la aptitud.
@@ -85,6 +130,7 @@ impl Default for GaConfig {
             elitism: 2,
             repair: true,
             operator_control: OperatorControl::Uniform,
+            niching: Niching::None,
             threads: 0,
             fitness: FitnessConfig::default(),
         }
@@ -230,6 +276,10 @@ struct Engine<'a> {
     prefix: Vec<f64>,
     macro_arm: Vec<Option<usize>>,
     parent_fit: Vec<f64>,
+    /// Padres de cada hijo (para el crowding).
+    child_parents: Vec<(u32, u32)>,
+    /// Aptitud usada para seleccionar (compartida si hay sharing).
+    sel_fit: Vec<f64>,
     bandit: Dmab,
 }
 
@@ -238,13 +288,44 @@ impl Engine<'_> {
         if self.cfg.fitness.aggregation == Aggregation::Deb {
             self.evals[a].deb_beats(&self.evals[b])
         } else {
-            self.evals[a].fitness > self.evals[b].fitness
+            self.sel_fit[a] > self.sel_fit[b]
+        }
+    }
+
+    /// Calcula la aptitud de selección (compartida si hay *fitness sharing*).
+    fn selection_fitness(&mut self) {
+        self.sel_fit.clear();
+        self.sel_fit.extend(self.evals.iter().map(|e| e.fitness));
+        if let Niching::Sharing(sigma) = self.cfg.niching {
+            let n = self.pop.len();
+            let mut niche = vec![1.0; n]; // sh(0) = 1 por el propio individuo
+            for i in 0..n {
+                for j in i + 1..n {
+                    let d = distance(&self.pop[i], &self.pop[j]);
+                    if d < sigma {
+                        let sh = 1.0 - d / sigma;
+                        niche[i] += sh;
+                        niche[j] += sh;
+                    }
+                }
+            }
+            for (f, m) in self.sel_fit.iter_mut().zip(niche) {
+                *f /= m;
+            }
         }
     }
 
     fn select(&mut self, n: usize) {
         self.parents.clear();
-        let fitness: Vec<f64> = self.evals.iter().map(|e| e.fitness).collect();
+        self.selection_fitness();
+        if self.cfg.niching == Niching::Crowding {
+            // Crowding determinista (Mahfoud): padres emparejados al azar; la
+            // presión selectiva la pone la competencia entre hijo y padre.
+            self.parents
+                .extend((0..n).map(|_| self.rng.index(self.pop.len()) as u32));
+            return;
+        }
+        let fitness = self.sel_fit.clone();
         match self.cfg.selection {
             Selection::Tournament(k) => {
                 let mut rng = self.rng.clone();
@@ -329,8 +410,48 @@ impl Engine<'_> {
                 init::repair(child, self.cfg.repair);
                 self.macro_arm[i + j] = arm;
                 self.parent_fit[i + j] = pf;
+                self.child_parents[i + j] = if j == 0 {
+                    (pa as u32, pb as u32)
+                } else {
+                    (pb as u32, pa as u32)
+                };
             }
             i += produced;
+        }
+    }
+
+    /// *Crowding* determinista: cada pareja de hijos se empareja con sus padres
+    /// minimizando la suma de distancias; un hijo solo entra si no es peor que
+    /// el padre emparejado, si no el padre ocupa su lugar.
+    fn crowding_replace(&mut self, elites: usize) {
+        let n = self.pop.len();
+        let mut i = elites;
+        while i < n {
+            let (p1, p2) = (
+                self.child_parents[i].0 as usize,
+                self.child_parents[i].1 as usize,
+            );
+            let pair = i + 1 < n;
+            let matches: Vec<(usize, usize)> = if pair {
+                let straight = distance(&self.pop[p1], &self.next[i])
+                    + distance(&self.pop[p2], &self.next[i + 1]);
+                let crossed = distance(&self.pop[p1], &self.next[i + 1])
+                    + distance(&self.pop[p2], &self.next[i]);
+                if straight <= crossed {
+                    vec![(i, p1), (i + 1, p2)]
+                } else {
+                    vec![(i, p2), (i + 1, p1)]
+                }
+            } else {
+                vec![(i, p1)]
+            };
+            for (c, p) in matches {
+                if self.next_evals[c].fitness < self.evals[p].fitness {
+                    self.next[c].clone_from(&self.pop[p]);
+                    self.next_evals[c].clone_from(&self.evals[p]);
+                }
+            }
+            i += if pair { 2 } else { 1 };
         }
     }
 
@@ -435,6 +556,8 @@ pub fn run(
         prefix: Vec::with_capacity(n),
         macro_arm: vec![None; n],
         parent_fit: vec![0.0; n],
+        child_parents: vec![(0, 0); n],
+        sel_fit: Vec::with_capacity(n),
         bandit: Dmab::new(MacroOp::ALL.len()),
     };
     let mut evaluations = n;
@@ -485,6 +608,9 @@ pub fn run(
                     e.bandit.update(arm, (gain / 0.05).min(1.0));
                 }
             }
+        }
+        if matches!(cfg.niching, Niching::Crowding | Niching::CrowdingSelective) {
+            e.crowding_replace(cfg.elitism);
         }
         // 5. Intercambio de búferes.
         std::mem::swap(&mut e.pop, &mut e.next);
@@ -541,6 +667,43 @@ mod tests {
             assert!(w[1].best >= w[0].best - 1e-12);
         }
         assert_eq!(r.history.last().map(|s| s.evaluations), Some(24 + 8 * 22));
+    }
+
+    #[test]
+    fn nichos_deterministas_y_con_elitismo() {
+        let checker = Checker::default();
+        for niching in [
+            Niching::Sharing(0.15),
+            Niching::Crowding,
+            Niching::CrowdingSelective,
+        ] {
+            let cfg = GaConfig {
+                niching,
+                ..small(5, 1)
+            };
+            let a = run(&cfg, &checker, Extras::default(), |_, _, _| {});
+            let b = run(
+                &GaConfig {
+                    threads: 3,
+                    ..cfg.clone()
+                },
+                &checker,
+                Extras::default(),
+                |_, _, _| {},
+            );
+            assert_eq!(a.history, b.history, "{niching:?}");
+            assert!(a.history.windows(2).all(|w| w[1].best >= w[0].best - 1e-12));
+        }
+    }
+
+    #[test]
+    fn distancia_acotada() {
+        let mut rng = Rng::seed_from_u64(1);
+        let a = init::random_level(40, &mut rng);
+        let b = init::random_level(40, &mut rng);
+        assert!(distance(&a, &a).abs() < 1e-12);
+        let d = distance(&a, &b);
+        assert!((0.0..=1.0).contains(&d) && d > 0.0);
     }
 
     #[test]

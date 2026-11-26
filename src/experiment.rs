@@ -10,7 +10,7 @@ use crate::error::{Error, Result};
 use crate::fitness::{Aggregation, Evaluation, Extras, Scorer};
 use crate::ga::selection::{Scaling, Selection};
 use crate::ga::variation::Crossover;
-use crate::ga::{self, GaConfig, OperatorControl};
+use crate::ga::{self, GaConfig, Niching, OperatorControl};
 use crate::level::{Level, Style};
 use crate::play::Checker;
 use crate::plot::{self, Series};
@@ -214,7 +214,7 @@ fn ga_variant(name: impl Into<String>, config: GaConfig) -> Variant {
 }
 
 /// Nombres de los experimentos disponibles.
-pub const EXPERIMENTS: [(&str, &str); 10] = [
+pub const EXPERIMENTS: [(&str, &str); 11] = [
     (
         "e1",
         "¿Aporta el GA? GA frente a búsqueda aleatoria, (1+1)-EA y GA sin cruce",
@@ -245,6 +245,10 @@ pub const EXPERIMENTS: [(&str, &str); 10] = [
     (
         "e10",
         "Control de operadores: uniforme frente a bandido D-MAB",
+    ),
+    (
+        "e11",
+        "Diversidad: sin nichos, fitness sharing y crowding determinista",
     ),
 ];
 
@@ -342,6 +346,7 @@ pub fn define(name: &str, base: &GaConfig) -> Result<Vec<Variant>> {
                 },
             ),
         ],
+        "e11" => define_e11(&b),
         _ => {
             return Err(Error::Config(format!(
                 "experimento desconocido «{name}»; disponibles: {}",
@@ -425,6 +430,19 @@ fn define_e8(b: &dyn Fn() -> GaConfig) -> Vec<Variant> {
         ga_variant("GA", without),
         ga_variant("GA + naturalidad", with),
     ]
+}
+
+fn define_e11(b: &dyn Fn() -> GaConfig) -> Vec<Variant> {
+    [
+        ("sin nichos", Niching::None),
+        ("sharing σ=0,1", Niching::Sharing(0.1)),
+        ("sharing σ=0,2", Niching::Sharing(0.2)),
+        ("crowding (Mahfoud)", Niching::Crowding),
+        ("crowding + torneo", Niching::CrowdingSelective),
+    ]
+    .iter()
+    .map(|&(n, niching)| ga_variant(n, GaConfig { niching, ..b() }))
+    .collect()
 }
 
 /// Umbral de éxito: jugable y con aptitud al menos este valor.
