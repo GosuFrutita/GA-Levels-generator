@@ -218,6 +218,12 @@ pub fn ga_config(args: &mut Args) -> Result<GaConfig> {
             _ => return Err(Error::Config(format!("nicho desconocido: «{s}»"))),
         };
     }
+    if let Some(s) = args.take("estilo") {
+        cfg.fixed_style = Some(
+            crate::level::Style::from_name(&s)
+                .ok_or_else(|| Error::Config(format!("estilo desconocido: «{s}»")))?,
+        );
+    }
     let t = &mut cfg.fitness.targets;
     t.difficulty = args.get("dificultad", t.difficulty)?;
     if cfg.population < 2 || cfg.elitism >= cfg.population {

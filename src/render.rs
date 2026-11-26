@@ -25,6 +25,115 @@ enum Sheet {
     Backgrounds,
 }
 
+impl Sheet {
+    /// Archivo de la hoja relativo al directorio de recursos.
+    const fn file(self) -> &'static str {
+        match self {
+            Self::Base => "kenney_pixel-platformer/tilemap_packed.png",
+            Self::Farm => "kenney_pixel-platformer-farm-expansion/tilemap_packed.png",
+            Self::Food => "kenney_pixel-platformer-food-expansion/tilemap_packed.png",
+            Self::Industrial => "kenney_pixel-platformer-industrial-expansion/tilemap_packed.png",
+            Self::Characters => "kenney_pixel-platformer/tilemap-characters_packed.png",
+            Self::Backgrounds => "kenney_pixel-platformer/tilemap-backgrounds_packed.png",
+        }
+    }
+
+    /// Columnas de la hoja.
+    const fn columns(self) -> u32 {
+        match self {
+            Self::Base => 20,
+            Self::Farm | Self::Food | Self::Industrial => 16,
+            Self::Characters => 9,
+            Self::Backgrounds => 8,
+        }
+    }
+
+    /// Lado del sprite en píxeles.
+    const fn size(self) -> u32 {
+        match self {
+            Self::Characters | Self::Backgrounds => BIG,
+            _ => TILE,
+        }
+    }
+}
+
+/// Sprite exportado para otros programas (p. ej. el juego en Godot).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpriteRef {
+    /// Hoja relativa al directorio de recursos.
+    pub file: &'static str,
+    /// Índice dentro de la hoja.
+    pub index: u16,
+    /// Columnas de la hoja.
+    pub columns: u32,
+    /// Lado del sprite en píxeles.
+    pub size: u32,
+}
+
+impl From<Spr> for SpriteRef {
+    fn from(s: Spr) -> Self {
+        Self {
+            file: s.0.file(),
+            index: s.1,
+            columns: s.0.columns(),
+            size: s.0.size(),
+        }
+    }
+}
+
+/// Sprites de los elementos dinámicos de un estilo: monedas, enemigo (dos
+/// fotogramas), jugador (dos fotogramas) y bandera de meta (asta y dos
+/// fotogramas de la tela).
+pub fn dynamic_sprites(style: Style) -> Vec<(&'static str, Vec<SpriteRef>)> {
+    let sk = skin(style);
+    // Segundo fotograma de la animación (la bola de pinchos industrial solo tiene uno).
+    let next = |s: Spr| {
+        if style == Style::Industrial {
+            s
+        } else {
+            Spr(s.0, s.1 + 1)
+        }
+    };
+    vec![
+        ("monedas", sk.coin.iter().map(|&s| s.into()).collect()),
+        ("enemigo", vec![sk.enemy.into(), next(sk.enemy).into()]),
+        (
+            "jugador",
+            vec![
+                Spr(Sheet::Characters, 0).into(),
+                Spr(Sheet::Characters, 1).into(),
+            ],
+        ),
+        (
+            "meta",
+            vec![
+                Spr(Sheet::Base, 131).into(),
+                Spr(Sheet::Base, 111).into(),
+                Spr(Sheet::Base, 112).into(),
+            ],
+        ),
+    ]
+}
+
+/// Escenario estático de un nivel (sin enemigos, monedas, salida ni meta, que
+/// se dibujan aparte porque se mueven o desaparecen).
+pub fn render_static(level: &Level, sets: &Tilesets) -> Image {
+    let mut stat = level.clone();
+    for t in stat.tiles_mut() {
+        if matches!(*t, Tile::Enemy | Tile::Coin | Tile::Start | Tile::Goal) {
+            *t = Tile::Empty;
+        }
+    }
+    render(
+        &stat,
+        sets,
+        &RenderOptions {
+            scale: 1,
+            path: vec![],
+        },
+    )
+}
+
 /// Referencia a un sprite: hoja + índice.
 #[derive(Debug, Clone, Copy)]
 struct Spr(Sheet, u16);
@@ -128,13 +237,15 @@ fn skin(style: Style) -> Skin {
             platform: e4(Industrial, 4, 4, 5, 6),
             ladder_top: Spr(Industrial, 11),
             ladder: Spr(Industrial, 27),
-            hazard: &[Spr(Industrial, 13)],
+            // El ácido (13) es un tile de estanque y se leía como un bloque sólido.
+            hazard: &[Spr(Base, 68)],
             coin: &[Spr(Base, 151)],
+            // La caja rayada (62) parecía sólida: se usan luces de alarma.
             decor: &[
                 Spr(Industrial, 9),
                 Spr(Industrial, 42),
-                Spr(Industrial, 62),
                 Spr(Industrial, 64),
+                Spr(Industrial, 65),
             ],
             enemy: Spr(Characters, 8),
             background: [4, 12, 20],

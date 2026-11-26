@@ -30,6 +30,30 @@ cargo run --release -- comprobar resultados/prueba/mejor.txt
 `diversidad.svg` y `estilos.svg`) junto con el mejor nivel en texto y en PNG
 con su trayectoria óptima. También guarda el mejor nivel jugable de cada estilo.
 
+## Jugar los niveles (Godot 4)
+
+El juego en `godot/` es un plataformas sencillo con la misma física que el
+verificador (salto de unas 3 casillas de alto y 4 de largo). Pide a `nivelga
+generar` un nivel nuevo y distinto cada vez (ancho, dificultad objetivo y
+tileset al azar) y prepara el siguiente en segundo plano mientras juegas, así
+hay niveles sin fin. Cada partida se registra en `resultados/partidas.csv`.
+
+```sh
+cargo build --release
+sh scripts/jugar.sh                     # niveles nuevos sin fin
+sh scripts/jugar.sh --nivel=RUTA.json   # un nivel concreto (ver `nivelga exportar`)
+cargo run --release -- partidas         # compara la dificultad D con tus partidas
+```
+
+Controles: flechas o A/D para moverse, espacio, Z o flecha arriba para saltar,
+flechas arriba y abajo en las escaleras, R reinicia, N o Enter pasa al
+siguiente nivel, F marca el nivel para revisarlo (se copia en
+`resultados/marcados/`), P muestra el camino óptimo del BFS y Esc sale.
+
+Godot solo se usa para jugar: la generación, las métricas y el aprendizaje
+siguen hechos a mano en Rust. El script busca el ejecutable en la variable
+`GODOT`, en el `PATH` o en la carpeta de la versión anterior del proyecto.
+
 ## Red de naturalidad (cross-entropy)
 
 Un MLP aprende a predecir cada tile a partir de su contexto en los niveles de

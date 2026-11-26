@@ -110,6 +110,72 @@ fn string_literals(code: &str) -> Vec<String> {
     out
 }
 
+/// Revisa los comentarios `#` de `GDScript` (juego en Godot) y de los scripts de shell.
+fn check_hash_comments(root: &Path, errors: &mut Vec<String>) {
+    let mut hash_files: Vec<PathBuf> = ["godot", "scripts"]
+        .iter()
+        .flat_map(|d| fs::read_dir(root.join(d)).into_iter().flatten().flatten())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "gd" || x == "sh"))
+        .collect();
+    hash_files.sort();
+    for f in &hash_files {
+        let text = fs::read_to_string(f).expect("fuente legible");
+        let mut block = String::new();
+        let mut block_line = 0;
+        for (n, line) in text.lines().enumerate() {
+            let t = line.trim_start();
+            if let Some(c) = t.strip_prefix('#').filter(|_| !t.starts_with("#!")) {
+                if block.is_empty() {
+                    block_line = n + 1;
+                }
+                block.push(' ');
+                block.push_str(c);
+                continue;
+            }
+            for p in problems(&block) {
+                errors.push(format!("{}:{block_line}: {p}", f.display()));
+            }
+            block.clear();
+            for lit in string_literals(line.split(" #").next().unwrap_or_default()) {
+                for p in problems(&lit) {
+                    errors.push(format!("{}:{}: {p} (cadena)", f.display(), n + 1));
+                }
+            }
+        }
+        for p in problems(&block) {
+            errors.push(format!("{}:{block_line}: {p}", f.display()));
+        }
+    }
+}
+
+/// Revisa la documentación en Markdown de la raíz (fuera de los bloques de código).
+fn check_markdown(root: &Path, errors: &mut Vec<String>) {
+    let mut docs: Vec<PathBuf> = fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "md"))
+        .collect();
+    docs.sort();
+    for f in &docs {
+        let text = fs::read_to_string(f).expect("documento legible");
+        let mut in_code = false;
+        for (n, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with("```") {
+                in_code = !in_code;
+                continue;
+            }
+            if !in_code {
+                for p in problems(line) {
+                    errors.push(format!("{}:{}: {p}", f.display(), n + 1));
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn comentarios_y_mensajes_siguen_las_reglas() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -157,30 +223,8 @@ fn comentarios_y_mensajes_siguen_las_reglas() {
             errors.push(format!("{}:{block_line}: {p}", f.display()));
         }
     }
-    // Documentación en Markdown de la raíz (fuera de los bloques de código).
-    let mut docs: Vec<PathBuf> = fs::read_dir(root)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "md"))
-        .collect();
-    docs.sort();
-    for f in &docs {
-        let text = fs::read_to_string(f).expect("documento legible");
-        let mut in_code = false;
-        for (n, line) in text.lines().enumerate() {
-            if line.trim_start().starts_with("```") {
-                in_code = !in_code;
-                continue;
-            }
-            if !in_code {
-                for p in problems(line) {
-                    errors.push(format!("{}:{}: {p}", f.display(), n + 1));
-                }
-            }
-        }
-    }
+    check_hash_comments(root, &mut errors);
+    check_markdown(root, &mut errors);
     assert!(
         errors.is_empty(),
         "infracciones de estilo:\n{}",

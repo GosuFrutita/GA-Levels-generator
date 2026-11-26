@@ -21,6 +21,13 @@ USO:
                                       anima en la terminal el camino óptimo
   nivelga dibujar <nivel.txt> <salida.png> [--escala 2]
   nivelga comprobar <nivel.txt>       analiza jugabilidad y métricas
+  nivelga generar [--salida DIR] [--semilla N] [--ancho W] [--dificultad D]
+                  [--estilo azar|libre|pradera|granja|dulce|industrial]
+                                      evoluciona un nivel nuevo para el juego (JSON + PNG)
+  nivelga exportar <nivel.txt> [--salida DIR]
+                                      convierte un nivel en texto al formato del juego
+  nivelga partidas [resultados/partidas.csv]
+                                      compara la dificultad D con las partidas jugadas
   nivelga experimento <e1..e10|todos> [--repeticiones 30] [--salida DIR]
                                       [opciones de la configuración base]
   nivelga experimentos                lista los experimentos disponibles
@@ -54,6 +61,7 @@ OPCIONES DE `evolucionar`:
   --nicho N            ninguno | sharing[:σ] | crowding | crowding-seleccion
   --agregacion A       suma | geometrica | penalizacion:λ | deb  (suma)
   --dificultad D       dificultad objetivo D* (0.5)
+  --estilo E           fija el tileset (pradera, granja, dulce, industrial)
   --hilos N            hilos de evaluación (0 = todos)
   --naturalidad RUTA   añade el término de la red de naturalidad
   --peso-nat W         peso de ese término (0.15)
@@ -593,6 +601,282 @@ fn entrenar_pg(mut args: Args) -> Result<()> {
     Ok(())
 }
 
+/// Semilla a partir del reloj (para generar niveles distintos cada vez).
+fn clock_seed() -> u64 {
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    nivelga::rng::mix_seed(&[
+        t.as_secs(),
+        u64::from(t.subsec_nanos()),
+        u64::from(std::process::id()),
+    ])
+}
+
+/// Documento JSON de un nivel generado para el juego en Godot.
+fn level_json(
+    level: &Level,
+    e: &nivelga::fitness::Evaluation,
+    traj: &[(usize, usize)],
+    assets: &std::path::Path,
+    background: &str,
+    (seed, target, seconds): (u64, f64, f64),
+) -> nivelga::json::Json {
+    use nivelga::json::Json;
+    let abs = |p: &std::path::Path| {
+        std::fs::canonicalize(p)
+            .map_or_else(|_| p.display().to_string(), |a| a.display().to_string())
+    };
+    let rows: Vec<String> = (0..level.height())
+        .map(|y| {
+            (0..level.width())
+                .map(|x| level.get(x, y).to_char())
+                .collect()
+        })
+        .collect();
+    let f = &e.features;
+    let metrics = Json::obj()
+        .with("aptitud", e.fitness)
+        .with("jugable", e.feasible)
+        .with("calidad", e.quality)
+        .with("dificultad", e.difficulty)
+        .with("variedad", e.variety)
+        .with("coherencia", e.coherence)
+        .with("naturalidad", e.naturalness)
+        .with("saltos", f.jumps)
+        .with("saltos_ajustados", f.tight_jumps)
+        .with("enemigos", f.enemies)
+        .with("peligros", f.hazards)
+        .with("huecos", f.gaps)
+        .with("monedas", f.coins)
+        .with("escaleras", f.ladders)
+        .with("linealidad", f.linearity)
+        .with("leniencia", f.leniency);
+    let mut sprites = Json::obj();
+    for (name, refs) in nivelga::render::dynamic_sprites(level.style) {
+        let list: Vec<Json> = refs
+            .iter()
+            .map(|r| {
+                Json::obj()
+                    .with("hoja", abs(&assets.join(r.file)))
+                    .with("indice", u32::from(r.index))
+                    .with("columnas", r.columns)
+                    .with("tam", r.size)
+            })
+            .collect();
+        sprites = sprites.with(name, Json::Arr(list));
+    }
+    Json::obj()
+        .with("version", 1_u32)
+        .with("semilla", seed.to_string())
+        .with("ancho", level.width())
+        .with("alto", level.height())
+        .with("estilo", level.style.name())
+        .with("dificultad_objetivo", target)
+        .with("segundos_generacion", seconds)
+        .with("fondo", background)
+        .with("filas", rows)
+        .with(
+            "trayectoria",
+            Json::Arr(traj.iter().map(|&(x, y)| Json::from(vec![x, y])).collect()),
+        )
+        .with("metricas", metrics)
+        .with("sprites", sprites)
+}
+
+/// Genera un nivel nuevo para el juego en Godot: evoluciona con el GA (crowding
+/// con torneo, el mejor en E11) y escribe `nivel.json` y `fondo.png`.
+fn generar(mut args: Args) -> Result<()> {
+    let seed = match args.take("semilla") {
+        Some(v) => v
+            .parse()
+            .map_err(|_| Error::Config(format!("semilla inválida «{v}»")))?,
+        None => clock_seed(),
+    };
+    let mut rng = nivelga::rng::Rng::seed_from_u64(seed);
+    let width = args.get("ancho", 60 + rng.index(51))?;
+    let target = args.get("dificultad", 0.3 + 0.4 * rng.f64())?;
+    // Por defecto el estilo se sortea y se fija (variedad visual en el juego);
+    // con `--estilo libre` lo elige el GA, que tiende a converger a pradera.
+    let fixed_style = match args.take("estilo").as_deref() {
+        None | Some("azar") => {
+            Some(nivelga::level::Style::ALL[rng.index(nivelga::level::Style::COUNT)])
+        }
+        Some("libre") => None,
+        Some(n) => Some(
+            nivelga::level::Style::from_name(n)
+                .ok_or_else(|| Error::Config(format!("estilo desconocido «{n}»")))?,
+        ),
+    };
+    let generations = args.get("generaciones", 80_usize)?;
+    let population = args.get("poblacion", 60_usize)?;
+    let out = PathBuf::from(
+        args.take("salida")
+            .unwrap_or_else(|| "resultados/juego/actual".into()),
+    );
+    let assets = PathBuf::from(args.take("recursos").unwrap_or_else(|| "assets".into()));
+    let ext = Externals::load(&mut args)?;
+    args.finish()?;
+    let checker = Checker::default();
+    let t0 = std::time::Instant::now();
+    let mut cfg = ga::GaConfig {
+        seed,
+        width,
+        generations,
+        population,
+        niching: ga::Niching::CrowdingSelective,
+        fixed_style,
+        threads: 1,
+        ..ga::GaConfig::default()
+    };
+    cfg.fitness.targets.difficulty = target;
+    if ext.model.is_some() {
+        cfg.fitness.weights.naturalness = 0.15;
+    }
+    let mut result = ga::run(&cfg, &checker, ext.extras(), |_, _, _| {});
+    // Si por mala suerte el mejor no es jugable, se reintenta con otra semilla.
+    for k in 1..4 {
+        if result.best_eval.feasible {
+            break;
+        }
+        cfg.seed = seed.wrapping_add(k);
+        result = ga::run(&cfg, &checker, ext.extras(), |_, _, _| {});
+    }
+    let level = &result.best;
+    let play = checker.check(level, &mut PlayScratch::default());
+    let traj = checker.trajectory(level, &play);
+    std::fs::create_dir_all(&out)?;
+    let sets = Tilesets::load(&assets)?;
+    let bg_path = out.join("fondo.png");
+    nivelga::image::png::save(&nivelga::render::render_static(level, &sets), &bg_path)?;
+    std::fs::write(out.join("nivel.txt"), level.to_string())?;
+    let abs = |p: &std::path::Path| {
+        std::fs::canonicalize(p)
+            .map_or_else(|_| p.display().to_string(), |a| a.display().to_string())
+    };
+    let doc = level_json(
+        &result.best,
+        &result.best_eval,
+        &traj,
+        &assets,
+        &abs(&bg_path),
+        (seed, target, t0.elapsed().as_secs_f64()),
+    );
+    let json_path = out.join("nivel.json");
+    std::fs::write(&json_path, doc.dump())?;
+    println!("{}", abs(&json_path));
+    Ok(())
+}
+
+/// Convierte un nivel en texto al formato del juego (JSON + PNG).
+fn exportar(mut args: Args) -> Result<()> {
+    let level = load_level(&args)?;
+    let out = PathBuf::from(
+        args.take("salida")
+            .unwrap_or_else(|| "resultados/juego/exportado".into()),
+    );
+    let assets = PathBuf::from(args.take("recursos").unwrap_or_else(|| "assets".into()));
+    args.finish()?;
+    let checker = Checker::default();
+    let cfg = nivelga::fitness::FitnessConfig::default();
+    let e = nivelga::fitness::Evaluator::new(&checker, &cfg).evaluate(&level, Extras::default());
+    let play = checker.check(&level, &mut PlayScratch::default());
+    let traj = checker.trajectory(&level, &play);
+    std::fs::create_dir_all(&out)?;
+    let bg = out.join("fondo.png");
+    nivelga::image::png::save(
+        &nivelga::render::render_static(&level, &Tilesets::load(&assets)?),
+        &bg,
+    )?;
+    let bg_abs = std::fs::canonicalize(&bg)?.display().to_string();
+    let doc = level_json(
+        &level,
+        &e,
+        &traj,
+        &assets,
+        &bg_abs,
+        (0, cfg.targets.difficulty, 0.0),
+    );
+    let path = out.join("nivel.json");
+    std::fs::write(&path, doc.dump())?;
+    println!("{}", std::fs::canonicalize(&path)?.display());
+    Ok(())
+}
+
+/// Analiza el registro de partidas del juego en Godot: compara la dificultad
+/// medida por el GA (`D`) con la experiencia de quien juega.
+fn partidas(args: &Args) -> Result<()> {
+    let path = args
+        .positional
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "resultados/partidas.csv".into());
+    args.finish()?;
+    let text = std::fs::read_to_string(&path)?;
+    let mut lines = text.lines();
+    let header: Vec<&str> = lines.next().unwrap_or_default().split(',').collect();
+    let col = |name: &str| {
+        header.iter().position(|h| *h == name).ok_or_else(|| {
+            Error::format("registro de partidas", format!("falta la columna {name}"))
+        })
+    };
+    let (cd, cr, cm, cs, cmk) = (
+        col("dificultad")?,
+        col("resultado")?,
+        col("muertes")?,
+        col("segundos")?,
+        col("marcado")?,
+    );
+    let (mut d, mut deaths, mut secs, mut won_d, mut lost_d) =
+        (vec![], vec![], vec![], vec![], vec![]);
+    let (mut won, mut skipped, mut flagged) = (0, 0, 0);
+    for line in lines.filter(|l| !l.trim().is_empty()) {
+        let f: Vec<&str> = line.split(',').collect();
+        let num = |i: usize| {
+            f.get(i)
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(f64::NAN)
+        };
+        let dif = num(cd);
+        d.push(dif);
+        deaths.push(num(cm));
+        secs.push(num(cs));
+        if f.get(cr) == Some(&"ganado") {
+            won += 1;
+            won_d.push(dif);
+        } else {
+            skipped += 1;
+            lost_d.push(dif);
+        }
+        flagged += usize::from(f.get(cmk) == Some(&"si"));
+    }
+    let n = d.len();
+    println!(
+        "{n} partidas: {won} superadas, {skipped} saltadas o abandonadas, {flagged} marcadas para revisar"
+    );
+    if n >= 3 {
+        println!(
+            "Spearman(D, muertes)  = {:+.3}",
+            nivelga::stats::spearman(&d, &deaths)
+        );
+        println!(
+            "Spearman(D, segundos) = {:+.3}",
+            nivelga::stats::spearman(&d, &secs)
+        );
+    }
+    if !won_d.is_empty() && !lost_d.is_empty() {
+        let mw = nivelga::stats::mann_whitney(&lost_d, &won_d);
+        println!(
+            "D mediana de los superados {:.3} frente a los no superados {:.3} (Mann-Whitney p = {:.3e}, Â12 = {:.3})",
+            nivelga::stats::summary(&won_d).median,
+            nivelga::stats::summary(&lost_d).median,
+            mw.p,
+            nivelga::stats::a12(&lost_d, &won_d)
+        );
+    }
+    Ok(())
+}
+
 fn jugar(mut args: Args) -> Result<()> {
     let level = load_level(&args)?;
     let path = args
@@ -773,6 +1057,9 @@ fn main() -> Result<()> {
         "entrenar-rl" => entrenar_rl(args),
         "jugar" => jugar(args),
         "entrenar-pg" => entrenar_pg(args),
+        "generar" => generar(args),
+        "exportar" => exportar(args),
+        "partidas" => partidas(&args),
         "experimentos" => {
             for (n, d) in nivelga::experiment::EXPERIMENTS {
                 println!("{n:4}  {d}");

@@ -108,6 +108,8 @@ pub struct GaConfig {
     pub operator_control: OperatorControl,
     /// Mecanismo de nichos.
     pub niching: Niching,
+    /// Estilo fijo (sin evolucionar el gen de tileset); `None` = lo elige el GA.
+    pub fixed_style: Option<Style>,
     /// Hilos para la evaluación (0 = automático).
     pub threads: usize,
     /// Configuración de la aptitud.
@@ -131,6 +133,7 @@ impl Default for GaConfig {
             repair: true,
             operator_control: OperatorControl::Uniform,
             niching: Niching::None,
+            fixed_style: None,
             threads: 0,
             fitness: FitnessConfig::default(),
         }
@@ -404,7 +407,7 @@ impl Engine<'_> {
                     variation::macro_mutation(child, MacroOp::ALL[op], &mut self.rng);
                     arm = Some(op);
                 }
-                if self.rng.chance(mutation.style_rate) {
+                if self.cfg.fixed_style.is_none() && self.rng.chance(mutation.style_rate) {
                     variation::style_mutation(child, &mut self.rng);
                 }
                 init::repair(child, self.cfg.repair);
@@ -516,6 +519,19 @@ impl Engine<'_> {
     }
 }
 
+/// Población inicial con el generador constructivo (y el estilo fijo, si lo hay).
+fn initial_population(cfg: &GaConfig, rng: &mut Rng) -> Vec<Level> {
+    (0..cfg.population)
+        .map(|_| {
+            let mut l = init::random_level(cfg.width, rng);
+            if let Some(st) = cfg.fixed_style {
+                l.style = st;
+            }
+            l
+        })
+        .collect()
+}
+
 /// Ejecuta el algoritmo genético. `observer` recibe las estadísticas de cada
 /// generación y la población actual (para visualizar en vivo).
 ///
@@ -539,9 +555,7 @@ pub fn run(
         .map(|_| Evaluator::new(checker, &cfg.fitness))
         .collect();
     let mut rng = Rng::seed_from_u64(cfg.seed);
-    let pop: Vec<Level> = (0..n)
-        .map(|_| init::random_level(cfg.width, &mut rng))
-        .collect();
+    let pop = initial_population(cfg, &mut rng);
     let mut evals = vec![Evaluation::default(); n];
     evaluate_all(&pop, &mut evals, &mut evaluators, extras);
     let mut e = Engine {

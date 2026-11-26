@@ -17,6 +17,7 @@ pub mod fitness;
 pub mod ga;
 pub mod gp;
 pub mod image;
+pub mod json;
 pub mod level;
 pub mod metrics;
 pub mod naturalness;
