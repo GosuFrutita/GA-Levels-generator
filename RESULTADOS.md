@@ -66,8 +66,8 @@ sobre 20 000 niveles equilibrados etiquetados por el verificador. En prueba:
 
 La expresión de la PG es legible: un nivel es menos jugable cuanto mayor es su
 vano sin apoyo, cuantos más enemigos tiene (sobre todo junto a los huecos) y
-cuanto más alta es su mayor subida, y lo es más cuanto más largo es su mayor
-tramo llano.
+cuanto más alta es su mayor subida. En cambio, un tramo llano largo lo hace más
+jugable.
 
 ## Hallazgos sobre el diseño de niveles
 
@@ -83,7 +83,7 @@ tramo llano.
 - El verificador trataba a los enemigos como estáticos, pero en el juego
   patrullan una casilla a cada lado. Una fila de enemigos a 3 columnas parecía
   saltable y en el juego cerraba el paso. Ahora la zona de patrulla es mortal
-  para el verificador y el agente, y los enemigos de una fila quedan a 5
+  para el verificador y el agente. Además, los enemigos de una fila quedan a 5
   columnas como mínimo.
 - Una moneda alcanzable no es necesariamente recogible: puede estar en un pozo
   sin salida. Un recorrido hacia atrás desde la meta distingue las monedas
@@ -96,7 +96,7 @@ tramo llano.
   objetivo más exigente (por ejemplo la naturalidad o el probador de RL como
   términos de la aptitud) daría más margen.
 - **El probador de RL** gana casi todos los niveles aleatorios pero solo uno de
-  cada cuatro evolucionados, y su tasa de victorias ya no ordena los niveles
+  cada cuatro evolucionados. Su tasa de victorias ya no ordena los niveles
   por dificultad; haría falta un currículo con más niveles evolucionados.
 - **Las cifras de diseño** (envolvente de salto, mezcla objetivo de patrones,
   rangos de cada estilo) son propuestas razonadas a partir de las fuentes y del
