@@ -101,6 +101,8 @@ cargo run --release -- experimento e1 --repeticiones 30
 cargo run --release -- experimento todos --repeticiones 30 --naturalidad modelos/naturalidad.nng
 ```
 
+Los resultados obtenidos y su discusión están en [RESULTADOS.md](RESULTADOS.md).
+
 Cada experimento usa las mismas semillas para todas las variantes y guarda el
 CSV por ejecución, el resumen, las curvas de convergencia, los diagramas de
 caja y un informe con Kruskal-Wallis, Mann-Whitney con Holm, Â12, Fisher y
