@@ -167,7 +167,7 @@ pub struct GenStats {
     pub style_entropy: f64,
     /// Individuos por estilo.
     pub style_counts: [usize; Style::COUNT],
-    /// Intensidad de selección realizada: (media de los padres − media)/σ.
+    /// Intensidad de selección realizada al elegir los padres de la siguiente generación.
     pub selection_intensity: f64,
     /// Calidad, dificultad, variedad y coherencia del mejor de la generación.
     pub best_objectives: [f64; 4],
@@ -283,6 +283,8 @@ struct Engine<'a> {
     child_parents: Vec<(u32, u32)>,
     /// Aptitud usada para seleccionar (compartida si hay sharing).
     sel_fit: Vec<f64>,
+    /// Intensidad de selección de la última selección.
+    intensity: f64,
     bandit: Dmab,
 }
 
@@ -360,6 +362,29 @@ impl Engine<'_> {
                 }
             }
         }
+    }
+
+    /// Intensidad de selección realizada (Blickle y Thiele): diferencia entre
+    /// la aptitud media de los padres elegidos y la de la población, en
+    /// desviaciones típicas. Se mide justo al seleccionar, sobre la población
+    /// de la que salen los padres.
+    fn measure_intensity(&mut self) {
+        let n = self.evals.len() as f64;
+        let mean = self.evals.iter().map(|e| e.fitness).sum::<f64>() / n;
+        let sd = (self
+            .evals
+            .iter()
+            .map(|e| (e.fitness - mean).powi(2))
+            .sum::<f64>()
+            / n)
+            .sqrt();
+        let parents = self
+            .parents
+            .iter()
+            .map(|&p| self.evals[p as usize].fitness)
+            .sum::<f64>()
+            / self.parents.len().max(1) as f64;
+        self.intensity = if sd > 0.0 { (parents - mean) / sd } else { 0.0 };
     }
 
     /// Crea los hijos en `next[elites..]`.
@@ -485,11 +510,6 @@ impl Engine<'_> {
             .sum::<f64>()
             / (Style::COUNT as f64).ln();
         let (div, ent) = diversity(&self.pop);
-        let parents_mean = if self.parents.is_empty() {
-            mean
-        } else {
-            self.parents.iter().map(|&p| fit[p as usize]).sum::<f64>() / self.parents.len() as f64
-        };
         let e = &self.evals[bi];
         let mut usage = [0.0; MacroOp::ALL.len()];
         if self.cfg.operator_control == OperatorControl::Bandit {
@@ -508,11 +528,7 @@ impl Engine<'_> {
             cell_entropy: ent,
             style_entropy,
             style_counts,
-            selection_intensity: if std > 0.0 {
-                (parents_mean - mean) / std
-            } else {
-                0.0
-            },
+            selection_intensity: self.intensity,
             best_objectives: [e.quality, e.difficulty, e.variety, e.coherence],
             macro_usage: usage,
         }
@@ -572,6 +588,7 @@ pub fn run(
         parent_fit: vec![0.0; n],
         child_parents: vec![(0, 0); n],
         sel_fit: Vec::with_capacity(n),
+        intensity: 0.0,
         bandit: Dmab::new(MacroOp::ALL.len()),
     };
     let mut evaluations = n;
@@ -608,6 +625,7 @@ pub fn run(
         }
         // 2-3. Selección y variación.
         e.select(n - cfg.elitism + 1);
+        e.measure_intensity();
         e.breed(cfg.elitism);
         // 4. Evaluación paralela de los hijos.
         let (_, children) = e.next.split_at(cfg.elitism);
@@ -708,6 +726,26 @@ mod tests {
             assert_eq!(a.history, b.history, "{niching:?}");
             assert!(a.history.windows(2).all(|w| w[1].best >= w[0].best - 1e-12));
         }
+    }
+
+    #[test]
+    fn intensidad_medida_del_torneo() {
+        let checker = Checker::default();
+        let cfg = GaConfig {
+            selection: Selection::Tournament(5),
+            generations: 10,
+            ..small(2, 2)
+        };
+        let r = run(&cfg, &checker, Extras::default(), |_, _, _| {});
+        let mean = r
+            .history
+            .iter()
+            .skip(1)
+            .map(|h| h.selection_intensity)
+            .sum::<f64>()
+            / 10.0;
+        // Teórica para t = 5: 1,15 (Blickle y Thiele). La medida debe ser del mismo orden.
+        assert!(mean > 0.5 && mean < 1.6, "intensidad media {mean}");
     }
 
     #[test]
