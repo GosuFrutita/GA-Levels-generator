@@ -715,6 +715,7 @@ fn generar(mut args: Args) -> Result<()> {
     };
     let generations = args.get("generaciones", 80_usize)?;
     let population = args.get("poblacion", 60_usize)?;
+    let evolution = args.flag("evolucion", false)?;
     let out = PathBuf::from(
         args.take("salida")
             .unwrap_or_else(|| "resultados/juego/actual".into()),
@@ -738,38 +739,94 @@ fn generar(mut args: Args) -> Result<()> {
     if ext.model.is_some() {
         cfg.fitness.weights.naturalness = 0.15;
     }
-    let mut result = ga::run(&cfg, &checker, ext.extras(), |_, _, _| {});
+    // Generaciones de las que se guarda el mejor en el modo evolución: la
+    // inicial y 1/16, 1/8, 1/4, 1/2 y el total (0, 5, 10, 20, 40 y 80).
+    let marks: Vec<usize> = std::iter::once(0)
+        .chain([16, 8, 4, 2, 1].map(|d| generations / d))
+        .collect();
+    let mut snapshots: Vec<(String, Level, nivelga::fitness::Evaluation)> = Vec::new();
+    let mut observe = |st: &ga::GenStats, pop: &[Level], evals: &[nivelga::fitness::Evaluation]| {
+        if !evolution || !marks.contains(&st.generation) {
+            return;
+        }
+        let mut order: Vec<usize> = (0..pop.len()).collect();
+        order.sort_by(|&a, &b| evals[a].fitness.total_cmp(&evals[b].fitness));
+        if st.generation == 0 {
+            // Cada ejecución (también los reintentos) empieza su serie de cero.
+            snapshots.clear();
+            // Material de partida: un individuo típico (aptitud mediana).
+            let k = order[order.len() / 2];
+            snapshots.push((
+                "población inicial, individuo típico".into(),
+                pop[k].clone(),
+                evals[k].clone(),
+            ));
+        }
+        let k = order[order.len() - 1];
+        let label = format!("generación {} de {generations}, el mejor", st.generation);
+        snapshots.push((label, pop[k].clone(), evals[k].clone()));
+    };
+    let mut result = ga::run(&cfg, &checker, ext.extras(), &mut observe);
     // Si por mala suerte el mejor no es jugable, se reintenta con otra semilla.
     for k in 1..4 {
         if result.best_eval.feasible {
             break;
         }
         cfg.seed = seed.wrapping_add(k);
-        result = ga::run(&cfg, &checker, ext.extras(), |_, _, _| {});
+        result = ga::run(&cfg, &checker, ext.extras(), &mut observe);
     }
-    let mut best = result.best.clone();
-    checker.remove_trapped_coins(&mut best);
-    let level = &best;
-    std::fs::create_dir_all(&out)?;
-    let sets = Tilesets::load(&assets)?;
-    let bg_path = out.join("fondo.png");
-    nivelga::image::png::save(&nivelga::render::render_static(level, &sets), &bg_path)?;
-    std::fs::write(out.join("nivel.txt"), level.to_string())?;
+    let meta = (seed, target, t0.elapsed().as_secs_f64());
+    if evolution {
+        // Una carpeta por etapa, en orden; los niveles se muestran tal como los
+        // dejó el GA (sin quitar monedas trampa) para ver su evolución real.
+        for (k, (label, level, eval)) in snapshots.iter().enumerate() {
+            let doc = write_game_level(
+                level,
+                eval,
+                &out.join(format!("etapa_{k}")),
+                &assets,
+                meta,
+                Some(label),
+            )?;
+            println!("{doc}");
+        }
+    } else {
+        let mut best = result.best.clone();
+        checker.remove_trapped_coins(&mut best);
+        println!(
+            "{}",
+            write_game_level(&best, &result.best_eval, &out, &assets, meta, None)?
+        );
+    }
+    Ok(())
+}
+
+/// Escribe `nivel.txt`, `fondo.png` y `nivel.json` de un nivel para el juego y
+/// devuelve la ruta absoluta del JSON. `stage` describe la etapa de evolución.
+fn write_game_level(
+    level: &Level,
+    eval: &nivelga::fitness::Evaluation,
+    out: &std::path::Path,
+    assets: &std::path::Path,
+    meta: (u64, f64, f64),
+    stage: Option<&str>,
+) -> Result<String> {
     let abs = |p: &std::path::Path| {
         std::fs::canonicalize(p)
             .map_or_else(|_| p.display().to_string(), |a| a.display().to_string())
     };
-    let doc = level_json(
-        level,
-        &result.best_eval,
-        &assets,
-        &abs(&bg_path),
-        (seed, target, t0.elapsed().as_secs_f64()),
-    );
+    std::fs::create_dir_all(out)?;
+    let bg_path = out.join("fondo.png");
+    let sets = Tilesets::load(assets)?;
+    nivelga::image::png::save(&nivelga::render::render_static(level, &sets), &bg_path)?;
+    std::fs::write(out.join("nivel.txt"), level.to_string())?;
+    let mut doc = level_json(level, eval, assets, &abs(&bg_path), meta);
+    if let Some(s) = stage {
+        doc = doc.with("etapa", s);
+    }
     let json_path = out.join("nivel.json");
     std::fs::write(&json_path, doc.dump())?;
-    println!("{}", abs(&json_path));
-    Ok(())
+    Ok(abs(&json_path))
 }
 
 /// Convierte un nivel en texto al formato del juego (JSON + PNG).

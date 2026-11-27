@@ -6,8 +6,11 @@
 # alcanza unas 3,2 casillas de altura y unas 4,2 de distancia a la misma
 # altura, así un nivel que el verificador declara jugable también se puede pasar.
 #
-# Los niveles se generan con `nivelga generar` en un hilo mientras se juega,
-# de modo que siempre hay uno nuevo y distinto preparado. Cada partida se
+# Al empezar se elige el modo. En el infinito los niveles se generan con
+# `nivelga generar` en un hilo mientras se juega, de modo que siempre hay uno
+# nuevo y distinto preparado. En el de evolución se juega una misma ejecución
+# del GA etapa a etapa: un individuo típico de la población inicial y el mejor
+# de varias generaciones hasta la última. Cada partida se
 # registra en resultados/partidas.csv para comparar la dificultad medida (D)
 # con la experiencia real de quien juega.
 extends Node2D
@@ -37,6 +40,10 @@ var ancho := 0
 var alto := 14
 var numero_nivel := 0
 var nivel_fijo := ""
+# "" mientras se muestra el menú, "infinito" o "evolucion".
+var modo := ""
+var etapas: PackedStringArray = PackedStringArray()
+var etapa := 0
 
 # Jugador.
 var px := 0.0
@@ -94,17 +101,53 @@ func _ready() -> void:
 		_cargar(nivel_fijo)
 	elif not FileAccess.file_exists(binario):
 		aviso.text = "No encuentro %s.\nCompila antes con: cargo build --release" % binario
-		return
 	else:
-		aviso.text = "Generando el primer nivel..."
-		await get_tree().process_frame
-		var destino := _nuevo_destino()
-		if _generar(destino) == 0:
-			_cargar(destino.path_join("nivel.json"))
-		else:
-			aviso.text = "Falló la generación del nivel (ver la terminal)."
-			return
+		_mostrar_menu()
+
+
+# --- Menú y modos --------------------------------------------------------------
+
+func _mostrar_menu() -> void:
+	modo = ""
+	nivel = {}
+	for hijo in capa_nivel.get_children():
+		hijo.queue_free()
+	enemigos.clear()
+	monedas.clear()
+	sprite_jugador.visible = false
+	capa_depuracion.visible = false
+	hud.text = ""
+	aviso.text = "Elige un modo:\n\n1  Infinito: un nivel nuevo y distinto tras otro\n" \
+		+ "2  Evolución: una ejecución del GA, del nivel inicial al final\n\nEsc salir"
+
+
+func _empezar_infinito() -> void:
+	modo = "infinito"
+	if _siguiente_listo():
+		_cargar(siguiente)
+		siguiente = ""
 		_preparar_siguiente()
+		return
+	aviso.text = "Generando el primer nivel..."
+	await get_tree().process_frame
+	var rutas := _generar(_nuevo_destino(), false)
+	if rutas.is_empty():
+		aviso.text = "Falló la generación del nivel (ver la terminal)."
+		return
+	_cargar(rutas[0])
+	_preparar_siguiente()
+
+
+func _empezar_evolucion() -> void:
+	modo = "evolucion"
+	aviso.text = "Evolucionando niveles con el GA..."
+	await get_tree().process_frame
+	etapas = _generar(_nuevo_destino(), true)
+	if etapas.is_empty():
+		aviso.text = "Falló la generación de la evolución (ver la terminal)."
+		return
+	etapa = 0
+	_cargar(etapas[0])
 
 
 func _configurar_controles() -> void:
@@ -119,6 +162,9 @@ func _configurar_controles() -> void:
 		"marcar": [KEY_F],
 		"depurar": [KEY_F3, KEY_TAB],
 		"salir": [KEY_ESCAPE],
+		"menu": [KEY_M],
+		"modo_infinito": [KEY_1, KEY_KP_1],
+		"modo_evolucion": [KEY_2, KEY_KP_2],
 	}
 	for accion in mapa:
 		if not InputMap.has_action(accion):
@@ -167,16 +213,24 @@ func _nuevo_destino() -> String:
 	return dir_juego.path_join("nivel_%d_%d" % [Time.get_unix_time_from_system(), contador_generados])
 
 
-func _generar(destino: String) -> int:
+# Ejecuta `nivelga generar` y devuelve las rutas de los niveles creados (una en
+# el modo infinito y una por etapa en el de evolución); vacío si falla.
+func _generar(destino: String, evolucion: bool) -> PackedStringArray:
 	var args := ["generar", "--salida", destino, "--recursos", raiz.path_join("assets")]
+	if evolucion:
+		args.append("--evolucion")
 	var modelo := raiz.path_join("modelos/naturalidad.nng")
 	if FileAccess.file_exists(modelo):
 		args.append_array(["--naturalidad", modelo])
 	var salida := []
-	var codigo := OS.execute(binario, args, salida, true)
-	if codigo != 0:
+	if OS.execute(binario, args, salida, true) != 0:
 		printerr("nivelga generar falló: ", salida)
-	return codigo
+		return PackedStringArray()
+	var rutas := PackedStringArray()
+	for linea in str(salida[0]).split("\n", false):
+		if linea.ends_with("nivel.json"):
+			rutas.append(linea.strip_edges())
+	return rutas
 
 
 func _preparar_siguiente() -> void:
@@ -189,9 +243,8 @@ func _preparar_siguiente() -> void:
 
 
 func _generar_en_hilo(destino: String) -> String:
-	if _generar(destino) == 0:
-		return destino.path_join("nivel.json")
-	return ""
+	var rutas := _generar(destino, false)
+	return rutas[0] if not rutas.is_empty() else ""
 
 
 func _siguiente_listo() -> bool:
@@ -229,6 +282,8 @@ func _cargar(ruta: String) -> void:
 	alto = filas.size()
 	ancho = filas[0].length()
 	numero_nivel += 1
+	sprite_jugador.visible = true
+	capa_depuracion.visible = depuracion
 	for hijo in capa_nivel.get_children():
 		hijo.queue_free()
 	var fondo := Sprite2D.new()
@@ -521,16 +576,19 @@ func _actualizar_vista() -> void:
 	camara.position = Vector2(px + get_viewport_rect().size.x / zoom * 0.15, alto * T / 2.0)
 	var m: Dictionary = nivel["metricas"]
 	var total_monedas := int(m["monedas"])
-	hud.text = "Nivel %d · %s · %d columnas · dificultad medida %.2f\n" % [
-		numero_nivel, nivel["estilo"], ancho, m["dificultad"]
+	var cabecera := "Nivel %d" % numero_nivel
+	if nivel.has("etapa"):
+		cabecera = "Evolución %d/%d: %s · aptitud %.3f" % [etapa + 1, etapas.size(), nivel["etapa"], m["aptitud"]]
+	hud.text = "%s · %s · %d columnas · dificultad medida %.2f\n" % [
+		cabecera, nivel["estilo"], ancho, m["dificultad"]
 	] + "Muertes %d · monedas %d/%d · %.1f s%s\n" % [
 		muertes, total_monedas - monedas.size(), total_monedas, ticks / 60.0, " · MARCADO" if marcado else ""
-	] + "←→ moverse · espacio saltar · ↑↓ escaleras · R reiniciar · N siguiente · F marcar · F3 depurar · Esc salir"
+	] + "←→ moverse · espacio saltar · ↑↓ escaleras · R reiniciar · N siguiente · F marcar · F3 depurar · M menú · Esc salir"
 	if depuracion:
 		hud.text += "\nDepuración: blanco suelo · cian plataforma de un sentido · amarillo escalera\n" \
 			+ "rojo mata · naranja patrulla de enemigo · dorado moneda · verde meta · gris decoración · azul jugador"
 		capa_depuracion.queue_redraw()
-	if ganado and nivel_fijo == "" and not _siguiente_listo() and hilo != null:
+	if ganado and modo == "infinito" and not _siguiente_listo() and hilo != null:
 		aviso.text = "¡Nivel superado! Generando el siguiente..."
 
 
@@ -539,8 +597,17 @@ func _unhandled_input(ev: InputEvent) -> void:
 		if not nivel.is_empty() and not ganado:
 			_registrar("abandonado")
 		_cerrar()
+	elif modo == "" and nivel_fijo == "":
+		if ev.is_action_pressed("modo_infinito"):
+			_empezar_infinito()
+		elif ev.is_action_pressed("modo_evolucion"):
+			_empezar_evolucion()
 	elif nivel.is_empty():
 		return
+	elif ev.is_action_pressed("menu") and nivel_fijo == "":
+		if not ganado:
+			_registrar("abandonado")
+		_mostrar_menu()
 	elif ev.is_action_pressed("reiniciar"):
 		_reaparecer()
 	elif ev.is_action_pressed("marcar"):
@@ -557,6 +624,14 @@ func _pasar_al_siguiente() -> void:
 		return
 	if not ganado:
 		_registrar("saltado")
+	if modo == "evolucion":
+		etapa += 1
+		if etapa < etapas.size():
+			_cargar(etapas[etapa])
+		else:
+			_mostrar_menu()
+			aviso.text = "Fin de la evolución.\n\n" + aviso.text
+		return
 	if not _siguiente_listo():
 		aviso.text = "Generando el siguiente nivel..."
 		if hilo == null:
@@ -617,7 +692,11 @@ func _marcar() -> void:
 	aviso.text = "Nivel marcado en resultados/marcados/%s" % nivel["semilla"]
 
 
+# Solo se registran las partidas del modo infinito: son niveles finales del GA
+# y es con ellos con los que se compara la dificultad medida.
 func _registrar(resultado: String) -> void:
+	if modo == "evolucion":
+		return
 	var ruta := raiz.path_join("resultados/partidas.csv")
 	var nuevo := not FileAccess.file_exists(ruta)
 	var f := FileAccess.open(ruta, FileAccess.WRITE if nuevo else FileAccess.READ_WRITE)

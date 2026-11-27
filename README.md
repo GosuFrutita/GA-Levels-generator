@@ -40,15 +40,22 @@ hay niveles sin fin. Cada partida se registra en `resultados/partidas.csv`.
 
 ```sh
 cargo build --release
-sh scripts/jugar.sh                     # niveles nuevos sin fin
+sh scripts/jugar.sh                     # menú: modo infinito o de evolución
 sh scripts/jugar.sh --nivel=RUTA.json   # un nivel concreto (ver `nivelga exportar`)
 cargo run --release -- partidas         # compara la dificultad D con tus partidas
 ```
 
+Al empezar se elige el modo. El **infinito** genera un nivel nuevo y distinto
+tras otro. El de **evolución** juega una misma ejecución del GA etapa a etapa:
+un individuo típico de la población inicial y después el mejor de las
+generaciones 0, 5, 10, 20, 40 y 80, con su aptitud en pantalla. Los niveles se
+muestran tal como los dejó el GA. Por debajo usa
+`nivelga generar --evolucion`, que escribe una carpeta por etapa.
+
 Controles: flechas o A/D para moverse, espacio, Z o flecha arriba para saltar,
 flechas arriba y abajo en las escaleras, R reinicia, N o Enter pasa al
 siguiente nivel, F marca el nivel para revisarlo (se copia en
-`resultados/marcados/`), F3 o Tab activa el modo depuración y Esc sale. Con la
+`resultados/marcados/`), F3 o Tab activa el modo depuración, M vuelve al menú y Esc sale. Con la
 flecha abajo se baja de una plataforma de un solo sentido.
 
 El modo depuración dibuja el contorno de cada celda según su tipo (suelo,
