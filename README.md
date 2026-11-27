@@ -48,7 +48,8 @@ cargo run --release -- partidas         # compara la dificultad D con tus partid
 Controles: flechas o A/D para moverse, espacio, Z o flecha arriba para saltar,
 flechas arriba y abajo en las escaleras, R reinicia, N o Enter pasa al
 siguiente nivel, F marca el nivel para revisarlo (se copia en
-`resultados/marcados/`), P muestra el camino óptimo del BFS y Esc sale.
+`resultados/marcados/`) y Esc sale. Con la flecha abajo se baja de una
+plataforma de un solo sentido.
 
 Godot solo se usa para jugar: la generación, las métricas y el aprendizaje
 siguen hechos a mano en Rust. El script busca el ejecutable en la variable
@@ -105,13 +106,32 @@ CSV por ejecución, el resumen, las curvas de convergencia, los diagramas de
 caja y un informe con Kruskal-Wallis, Mann-Whitney con Holm, Â12, Fisher y
 Friedman.
 
+## Diseño de niveles
+
+El generador no coloca tiles sueltos: usa una biblioteca de patrones de diseño
+(`src/patterns.rs`) extraída de la literatura (patrones de Super Mario Bros de
+Dahlskog y Togelius, grupos de ritmo de Smith y Whitehead, plantillas de
+Spelunky, estructura en cuatro actos de Nintendo) y del análisis de niveles
+hechos a mano en proyectos de Godot. Hay huecos con arco de monedas,
+multihuecos, escalones, mesetas, zanjas con enemigos, hordas, pinchos, puentes,
+cadenas de plataformas, rutas dobles de riesgo y recompensa, pilares y
+escaleras de mano para desniveles mayores que el salto. Las plataformas son de
+un solo sentido (se atraviesan desde abajo).
+
+El cromosoma sigue siendo la matriz de tiles: los patrones se usan en la
+inicialización (grupos de ritmo con descansos), en una mutación que inserta
+patrones y en la aptitud, que detecta los patrones de la matriz y mide la
+variedad de diseño, la mezcla de tipos, la verticalidad y el ritmo. El cruce
+solo corta en columnas de descanso comunes a ambos padres.
+
 ## Componentes
 
 | Módulo | Contenido |
 | --- | --- |
 | `level` | Tiles lógicos, estilos, nivel guardado por columnas, formato de texto |
 | `play` | Verificador de jugabilidad: arcos de salto, Dijkstra con cubetas, trayectoria |
-| `metrics` | Rasgos, dificultad, variedad y coherencia |
+| `metrics` | Rasgos, dificultad, variedad de diseño y coherencia |
+| `patterns` | Biblioteca de patrones de diseño y detector |
 | `fitness` | Agregación multiobjetivo con la jugabilidad como restricción dura |
 | `ga` | Selección (torneo y ruleta con escalado y SUS), cruce, mutación, elitismo, reparación, bandido D-MAB |
 | `nn` | Red neuronal con cross-entropy, Adam y chequeo de gradientes |

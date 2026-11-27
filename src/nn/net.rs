@@ -340,19 +340,6 @@ impl<T: Float> Net<T> {
         }
     }
 
-    /// Convierte la red a otra precisión (p. ej. `f32` → `f64` para comprobar).
-    pub fn cast<U: Float>(&self) -> Net<U> {
-        Net {
-            spec: self.spec.clone(),
-            layout: self.layout.clone(),
-            params: self
-                .params
-                .iter()
-                .map(|p| U::from_f64(p.to_f64()))
-                .collect(),
-        }
-    }
-
     /// Serializa la red (cabecera de enteros + parámetros `f32` little-endian).
     pub fn to_bytes(&self) -> Vec<u8> {
         let s = &self.spec;

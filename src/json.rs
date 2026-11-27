@@ -6,8 +6,6 @@ use std::fmt::Write as _;
 /// Valor JSON.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Json {
-    /// `null`.
-    Null,
     /// Booleano.
     Bool(bool),
     /// Número (los no finitos se escriben como `null`).
@@ -57,7 +55,8 @@ impl Json {
                     let _ = write!(s, "{n}");
                 }
             }
-            Self::Null | Self::Num(_) => s.push_str("null"),
+            // Los números no finitos no existen en JSON: se escriben como `null`.
+            Self::Num(_) => s.push_str("null"),
             Self::Str(t) => escape(t, s),
             Self::Arr(v) => {
                 s.push('[');
@@ -124,12 +123,6 @@ impl From<u32> for Json {
 
 impl From<usize> for Json {
     fn from(n: usize) -> Self {
-        Self::Num(n as f64)
-    }
-}
-
-impl From<u64> for Json {
-    fn from(n: u64) -> Self {
         Self::Num(n as f64)
     }
 }

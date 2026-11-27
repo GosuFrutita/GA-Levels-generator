@@ -145,8 +145,6 @@ pub struct PlayResult {
     pub solvable: bool,
     /// Columna máxima alcanzada / columna de la meta, en `[0, 1]`.
     pub progress: f64,
-    /// Coste del camino óptimo (1 por paso, columnas + 1 por salto).
-    pub cost: u32,
     /// Celdas del camino óptimo, de la salida a la meta (vacío si no hay).
     pub path: Vec<(usize, usize)>,
     /// Movimientos del camino óptimo.
@@ -155,10 +153,6 @@ pub struct PlayResult {
     pub jumps: u32,
     /// Saltos "ajustados" (cerca del límite de altura o longitud).
     pub tight_jumps: u32,
-    /// Número de estados de reposo alcanzables.
-    pub reachable_states: u32,
-    /// Celdas atravesadas alcanzables (para el espacio negativo).
-    pub reachable_cells: u32,
     /// Monedas alcanzables.
     pub reachable_coins: u32,
 }
@@ -325,7 +319,7 @@ impl Checker {
             if t.is_lethal() {
                 return None;
             }
-            if t.is_solid() {
+            if t.blocks() {
                 // Choque: si bajaba y la celda previa tiene apoyo, aterriza ahí;
                 // si subía (cabezazo) o choca lateralmente, cae desde la previa.
                 return if s.falling && Self::is_rest(level, last.0, last.1) {
@@ -337,6 +331,8 @@ impl Checker {
                 };
             }
             visit(cx, cy);
+            // Al bajar se aterriza sobre cualquier apoyo (las plataformas solo
+            // sostienen desde arriba; al subir se atraviesan).
             if s.falling && cy >= 0 && Self::is_rest(level, cx, cy) && t != Tile::Ladder {
                 return Some((cx, cy));
             }
@@ -405,8 +401,6 @@ impl Checker {
             pending: 0,
             max_x: s0.0,
             goal_state: None,
-            states: 0,
-            cells: 0,
             coins: 0,
         };
         search.relax(s0, 0, u32::MAX, Move::Walk);
@@ -426,13 +420,11 @@ struct Search<'a> {
     pending: usize,
     max_x: i32,
     goal_state: Option<u32>,
-    states: u32,
-    cells: u32,
     coins: u32,
 }
 
 impl Search<'_> {
-    /// Marca una celda atravesada (espacio negativo, monedas, meta al vuelo).
+    /// Marca una celda atravesada (alcanzabilidad, monedas y meta al vuelo).
     fn touch(&mut self, x: i32, y: i32) {
         if y < 0 {
             return;
@@ -440,7 +432,6 @@ impl Search<'_> {
         let i = idx(x, y) as usize;
         if self.sc.touched[i] != self.sc.epoch {
             self.sc.touched[i] = self.sc.epoch;
-            self.cells += 1;
             if self.level.get(x as usize, y as usize) == Tile::Coin {
                 self.coins += 1;
             }
@@ -485,7 +476,6 @@ impl Search<'_> {
     /// Genera los vecinos del estado `u`.
     fn expand(&mut self, u: u32) {
         let level = self.level;
-        self.states += 1;
         let (ux, uy) = ((u as usize / HEIGHT) as i32, (u as usize % HEIGHT) as i32);
         self.max_x = self.max_x.max(ux);
         if (ux, uy) == self.goal && self.goal_state.is_none() {
@@ -561,8 +551,6 @@ impl Search<'_> {
         let ep = sc.epoch;
         let (gx, gy) = self.goal;
         let mut res = PlayResult {
-            reachable_states: self.states,
-            reachable_cells: self.cells,
             reachable_coins: self.coins,
             progress: if gx > s0.0 {
                 (f64::from(self.max_x - s0.0) / f64::from(gx - s0.0)).clamp(0.0, 1.0)
@@ -590,7 +578,6 @@ impl Search<'_> {
         };
         res.solvable = true;
         res.progress = 1.0;
-        res.cost = sc.dist[t as usize];
         let mut cur = t;
         while cur != u32::MAX {
             res.path
@@ -651,7 +638,6 @@ mod tests {
         let r = check(&lvl(&["-@--------!-", "XXXXXXXXXXXX"]));
         assert!(r.solvable);
         assert_eq!(r.jumps, 0);
-        assert_eq!(r.cost, 9);
     }
 
     #[test]

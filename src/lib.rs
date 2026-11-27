@@ -22,6 +22,7 @@ pub mod level;
 pub mod metrics;
 pub mod naturalness;
 pub mod nn;
+pub mod patterns;
 pub mod play;
 pub mod plot;
 pub mod render;

@@ -857,6 +857,38 @@ pub fn e8_naturalness(variants: &[Variant], runs: &[RunSummary], model: &dyn Sco
     rep
 }
 
+/// Compara la intensidad de selección medida de cada variante de E2 con la
+/// teórica del torneo (Blickle y Thiele, 1995) e informa de su pérdida de
+/// diversidad teórica.
+pub fn e2_selection_pressure(variants: &[Variant], runs: &[RunSummary]) -> String {
+    let mut rep = String::from(
+        "\nIntensidad de selección: medida (mediana) frente a la teórica del torneo:\n",
+    );
+    for (i, v) in variants.iter().enumerate() {
+        let measured: Vec<f64> = runs
+            .iter()
+            .filter(|r| r.variant == i)
+            .map(|r| r.mean_intensity)
+            .collect();
+        let med = stats::summary(&measured).median;
+        match v.config.selection {
+            Selection::Tournament(t) => {
+                let _ = writeln!(
+                    rep,
+                    "  {}: medida {med:.3}, teórica {:.3}, pérdida de diversidad teórica {:.3}",
+                    v.name,
+                    ga::selection::tournament_intensity(t),
+                    ga::selection::tournament_loss_of_diversity(t)
+                );
+            }
+            Selection::Roulette { .. } => {
+                let _ = writeln!(rep, "  {}: medida {med:.3}", v.name);
+            }
+        }
+    }
+    rep
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

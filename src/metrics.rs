@@ -39,22 +39,30 @@ pub struct Features {
     pub jumps: u32,
     /// Saltos ajustados.
     pub tight_jumps: u32,
-    /// Fracción de celdas vacías alcanzables (espacio negativo).
-    pub negative_space: f64,
     /// Linealidad de la superficie del suelo, `[0, 1]`.
     pub linearity: f64,
     /// Leniencia, `[0, 1]` (mayor = más fácil).
     pub leniency: f64,
-    /// Dispersión horizontal de enemigos normalizada (Summerville et al. 2017).
-    pub enemy_sparsity: f64,
     /// Fracción de celdas sólidas.
     pub density: f64,
     /// Patrones 3×3 distintos / ventanas 3×3.
     pub pattern_ratio: f64,
     /// Entropía normalizada de tipos no vacíos.
     pub entropy: f64,
-    /// Variedad entre segmentos, `[0, 1]`.
-    pub segment_variety: f64,
+    /// Tipos de patrón de diseño distintos detectados.
+    pub pattern_kinds: u32,
+    /// Distancia de variación total entre la mezcla de categorías y la objetivo, `[0, 1]`.
+    pub mix_distance: f64,
+    /// Fracción de pares de patrones consecutivos del mismo tipo.
+    pub repeats: f64,
+    /// Zonas de descanso (≥ 3 columnas llanas y seguras).
+    pub rests: u32,
+    /// Fracción de tramos de reto entre descansos con longitud razonable (4 a 24).
+    pub rhythm_ok: f64,
+    /// Fracción de posiciones alcanzables por encima del suelo base o sobre plataformas.
+    pub elevated: f64,
+    /// Filas distintas de plataforma sobre las que se puede estar de pie.
+    pub tiers: u32,
     /// Violaciones locales de coherencia.
     pub violations: u32,
     /// Monedas no alcanzables.
@@ -71,41 +79,40 @@ pub struct Features {
 #[derive(Debug, Clone, Default)]
 pub struct MetricScratch {
     patterns: Vec<u64>,
-    segments: Vec<[f64; 6]>,
 }
-
-/// Longitud de segmento para la variedad entre segmentos.
-pub const SEGMENT: usize = 16;
 
 fn evolvable_range(level: &Level) -> std::ops::Range<usize> {
     SAFE_COLS..level.width() - SAFE_COLS
 }
 
-/// Huecos: rachas de columnas sin suelo dentro de la región evolutiva.
-fn gaps(level: &Level) -> (u32, f64, u32) {
-    let (mut count, mut total, mut max, mut run) = (0_u32, 0_u32, 0_u32, 0_u32);
-    let mut close = |run: &mut u32| {
-        if *run > 0 {
-            count += 1;
-            total += *run;
-            max = max.max(*run);
-            *run = 0;
-        }
-    };
+/// Longitudes de las rachas de columnas de la región evolutiva que cumplen `pred`.
+pub(crate) fn column_runs(level: &Level, pred: impl Fn(usize) -> bool) -> Vec<u32> {
+    let mut runs = Vec::new();
+    let mut run = 0_u32;
     for x in evolvable_range(level) {
-        if level.ground_top(x) == HEIGHT {
+        if pred(x) {
             run += 1;
-        } else {
-            close(&mut run);
+        } else if run > 0 {
+            runs.push(run);
+            run = 0;
         }
     }
-    close(&mut run);
+    if run > 0 {
+        runs.push(run);
+    }
+    runs
+}
+
+/// Huecos (rachas de columnas sin suelo): número, anchura media y máxima.
+fn gaps(level: &Level) -> (u32, f64, u32) {
+    let runs = column_runs(level, |x| level.ground_top(x) == HEIGHT);
+    let count = runs.len() as u32;
     let mean = if count == 0 {
         0.0
     } else {
-        f64::from(total) / f64::from(count)
+        f64::from(runs.iter().sum::<u32>()) / f64::from(count)
     };
-    (count, mean, max)
+    (count, mean, runs.iter().copied().max().unwrap_or(0))
 }
 
 /// Linealidad: 1 − desviación absoluta media respecto a la recta de regresión de
@@ -187,59 +194,6 @@ fn entropy(counts: &[u32; Tile::COUNT]) -> f64 {
     h / (kinds.len() as f64).ln()
 }
 
-/// Variedad entre segmentos: distancia L1 media entre vectores de rasgos de
-/// segmentos de [`SEGMENT`] columnas, con penalización por segmentos
-/// consecutivos idénticos.
-fn segment_variety(level: &Level, segs: &mut Vec<[f64; 6]>) -> f64 {
-    segs.clear();
-    let range = evolvable_range(level);
-    let mut x = range.start;
-    while x + SEGMENT <= range.end {
-        let mut f = [0.0; 6];
-        for cx in x..x + SEGMENT {
-            let top = level.ground_top(cx);
-            f[0] += top as f64 / HEIGHT as f64;
-            f[1] += f64::from(u8::from(top == HEIGHT));
-            for &t in level.column(cx) {
-                match t {
-                    Tile::Enemy | Tile::Hazard => f[2] += 1.0,
-                    Tile::Platform => f[3] += 1.0,
-                    Tile::Coin => f[4] += 1.0,
-                    Tile::Ladder => f[5] += 1.0,
-                    _ => {}
-                }
-            }
-        }
-        // Normaliza: alturas y huecos por columna; objetos con techo razonable.
-        let k = SEGMENT as f64;
-        let scale = [k, k, k * 0.3, k * 1.0, k * 0.5, k * 0.5];
-        for (v, s) in f.iter_mut().zip(scale) {
-            *v = (*v / s).min(1.0);
-        }
-        segs.push(f);
-        x += SEGMENT;
-    }
-    if segs.len() < 2 {
-        return 0.0;
-    }
-    let dist =
-        |a: &[f64; 6], b: &[f64; 6]| a.iter().zip(b).map(|(p, q)| (p - q).abs()).sum::<f64>() / 6.0;
-    let mut sum = 0.0;
-    let mut pairs = 0.0;
-    for i in 0..segs.len() {
-        for j in i + 1..segs.len() {
-            sum += dist(&segs[i], &segs[j]);
-            pairs += 1.0;
-        }
-    }
-    let identical = segs
-        .windows(2)
-        .filter(|w| dist(&w[0], &w[1]) < 1e-9)
-        .count() as f64;
-    // Una distancia media de 0,25 ya es mucha variedad: se escala a [0, 1].
-    ((sum / pairs) / 0.25 - 0.1 * identical).clamp(0.0, 1.0)
-}
-
 /// Defectos de un tramo de escalera, evaluados en su celda superior: tramo de
 /// un solo tile o escalera sin salida (arriba no se puede estar de pie ni a los
 /// lados ni encima). Cuenta una vez por tramo.
@@ -248,14 +202,7 @@ fn ladder_flaw(level: &Level, x: i32, y: i32) -> bool {
         return false; // no es la celda superior del tramo
     }
     let short = level.get_or_empty(x, y + 1) != Tile::Ladder;
-    let stand = |cx: i32, cy: i32| {
-        cy >= 0
-            && level.get_or_empty(cx, cy).is_passable()
-            && level.get_or_empty(cx, cy + 1).is_support()
-    };
-    // Desde lo alto se sale a un lado, o hacia arriba si encima hay hueco y apoyo cerca.
-    let exit = stand(x - 1, y) || stand(x + 1, y) || stand(x - 1, y - 1) || stand(x + 1, y - 1);
-    short || !exit
+    short || !level.ladder_exit(x, y)
 }
 
 /// Cuenta violaciones locales de coherencia visual/lógica.
@@ -292,6 +239,90 @@ fn violations(level: &Level) -> u32 {
         }
     }
     v
+}
+
+/// Rasgos de diseño: patrones, mezcla, ritmo y verticalidad.
+struct Design {
+    kinds: u32,
+    mix_distance: f64,
+    repeats: f64,
+    rests: u32,
+    rhythm_ok: f64,
+    elevated: f64,
+    tiers: u32,
+}
+
+fn design_features(level: &Level, reach: &PlayScratch) -> Design {
+    use crate::patterns::{Category, detect, rest_areas};
+    let found = detect(level);
+    let mut kinds: Vec<_> = found.iter().map(|f| f.kind).collect();
+    kinds.sort_unstable();
+    kinds.dedup();
+    let n = found.len().max(1) as f64;
+    let mix_distance = 0.5
+        * Category::MIX
+            .iter()
+            .map(|c| {
+                let share = found.iter().filter(|f| f.kind.category() == *c).count() as f64 / n;
+                (share - c.target()).abs()
+            })
+            .sum::<f64>();
+    let repeats = if found.len() < 2 {
+        0.0
+    } else {
+        found.windows(2).filter(|w| w[0].kind == w[1].kind).count() as f64
+            / (found.len() - 1) as f64
+    };
+    // Ritmo: tramos de reto entre descansos consecutivos.
+    let rests = rest_areas(level);
+    let mut segs = Vec::new();
+    let mut prev_end = SAFE_COLS;
+    for &(a, b) in &rests {
+        if a > prev_end + 1 {
+            segs.push(a - prev_end - 1);
+        }
+        prev_end = b;
+    }
+    let rhythm_ok = if segs.is_empty() {
+        0.0
+    } else {
+        segs.iter().filter(|&&l| (4..=24).contains(&l)).count() as f64 / segs.len() as f64
+    };
+    // Verticalidad: posiciones de pie alcanzables sobre plataformas o elevadas.
+    let base_stand = crate::ga::init::SAFE_GROUND as i32 - 1;
+    let (mut stand, mut high) = (0_u32, 0_u32);
+    let mut tier_rows = [false; HEIGHT];
+    for x in 0..level.width() as i32 {
+        for y in 0..HEIGHT as i32 - 1 {
+            if !reach.touched(x, y) || !level.get_or_empty(x, y).is_passable() {
+                continue;
+            }
+            let below = level.get_or_empty(x, y + 1);
+            if !below.is_support() {
+                continue;
+            }
+            stand += 1;
+            if below == Tile::Platform {
+                tier_rows[y as usize] = true;
+            }
+            if below == Tile::Platform || y <= base_stand - 2 {
+                high += 1;
+            }
+        }
+    }
+    Design {
+        kinds: kinds.len() as u32,
+        mix_distance,
+        repeats,
+        rests: rests.len() as u32,
+        rhythm_ok,
+        elevated: if stand == 0 {
+            0.0
+        } else {
+            f64::from(high) / f64::from(stand)
+        },
+        tiers: tier_rows.iter().filter(|&&t| t).count() as u32,
+    }
 }
 
 /// Fracción de celdas de plataforma o escalera que el jugador no puede tocar:
@@ -355,32 +386,11 @@ impl Features {
         let width = level.width();
         let cells = (width * HEIGHT) as f64;
         let solid = level.tiles().iter().filter(|t| t.is_solid()).count() as f64;
-        let empty = level
-            .tiles()
-            .iter()
-            .filter(|t| !t.is_solid() && !t.is_lethal())
-            .count() as f64;
         let enemies = counts[Tile::Enemy as usize];
         let hazards = counts[Tile::Hazard as usize];
-        // Dispersión de enemigos: desviación absoluta media de su x, / (ancho/4).
-        let ex: Vec<f64> = (0..width)
-            .flat_map(|x| {
-                level
-                    .column(x)
-                    .iter()
-                    .filter(|&&t| t == Tile::Enemy)
-                    .map(move |_| x as f64)
-            })
-            .collect();
-        let enemy_sparsity = if ex.is_empty() {
-            0.0
-        } else {
-            let m = ex.iter().sum::<f64>() / ex.len() as f64;
-            (ex.iter().map(|x| (x - m).abs()).sum::<f64>() / ex.len() as f64 / (width as f64 / 4.0))
-                .min(1.0)
-        };
         let harm = f64::from(gaps + enemies + hazards);
         let structure = unreachable_structure(level, reach);
+        let design = design_features(level, reach);
         Self {
             width,
             enemies,
@@ -395,18 +405,18 @@ impl Features {
             gap_max,
             jumps: play.jumps,
             tight_jumps: play.tight_jumps,
-            negative_space: if empty > 0.0 {
-                f64::from(play.reachable_cells) / empty
-            } else {
-                0.0
-            },
             linearity: linearity(level),
             leniency: (1.0 - harm / (width as f64 / 4.0)).clamp(0.0, 1.0),
-            enemy_sparsity,
             density: solid / cells,
             pattern_ratio: pattern_ratio(level, &mut scratch.patterns),
             entropy: entropy(&counts),
-            segment_variety: segment_variety(level, &mut scratch.segments),
+            pattern_kinds: design.kinds,
+            mix_distance: design.mix_distance,
+            repeats: design.repeats,
+            rests: design.rests,
+            rhythm_ok: design.rhythm_ok,
+            elevated: design.elevated,
+            tiers: design.tiers,
             violations: violations(level),
             unreachable_coins: counts[Tile::Coin as usize].saturating_sub(play.reachable_coins),
             unreachable_structure: structure.0,
@@ -445,10 +455,6 @@ pub struct Targets {
     pub difficulty: f64,
     /// Tolerancia gaussiana de la dificultad.
     pub difficulty_sigma: f64,
-    /// Proporción objetivo de patrones 3×3 distintos `R*`.
-    pub pattern_ratio: f64,
-    /// Entropía objetivo de tipos.
-    pub entropy: f64,
 }
 
 impl Default for Targets {
@@ -456,12 +462,6 @@ impl Default for Targets {
         Self {
             difficulty: 0.5,
             difficulty_sigma: 0.15,
-            // Calibrados con los 15 niveles de Super Mario Bros del VGLC
-            // (`nivelga corpus`): patrones 3×3 distintos con mediana 0,056 en
-            // niveles de unas 187 columnas (algo más en niveles más cortos como
-            // los nuestros) y entropía de tipos con mediana 0,39.
-            pattern_ratio: 0.08,
-            entropy: 0.42,
         }
     }
 }
@@ -490,10 +490,20 @@ pub fn difficulty(f: &Features, max_jump: f64) -> f64 {
 }
 
 /// Variedad `V ∈ [0, 1]`.
-pub fn variety(f: &Features, t: &Targets) -> f64 {
-    let f_pat = bell(f.pattern_ratio, t.pattern_ratio, 0.04);
-    let f_ent = bell(f.entropy, t.entropy, 0.12);
-    0.4 * f_pat + 0.3 * f_ent + 0.3 * f.segment_variety
+pub fn variety(f: &Features) -> f64 {
+    // Variedad de diseño, no de tiles: patrones reconocibles (Dahlskog y
+    // Togelius), mezcla de tipos (como el χ² de Launchpad), verticalidad (30 a
+    // 50 % del recorrido sobre el suelo base en los niveles hechos a mano
+    // analizados) y ritmo con descansos (Smith et al.).
+    let target_kinds = if f.width <= 80 { 6.0 } else { 8.0 };
+    let f_types = (f64::from(f.pattern_kinds) / target_kinds).min(1.0);
+    let f_mix = 1.0 - f.mix_distance;
+    let f_vert =
+        0.8 * band(f.elevated, 0.30, 0.50, 0.12) + 0.2 * (f64::from(f.tiers) / 2.0).min(1.0);
+    let wanted_rests = (f.width as f64 / 25.0).max(1.0);
+    let f_rhythm = 0.5 * (f64::from(f.rests) / wanted_rests).min(1.0) + 0.5 * f.rhythm_ok;
+    let f_repeat = 1.0 - (f.repeats - 0.3).max(0.0);
+    0.25 * f_types + 0.25 * f_mix + 0.25 * f_vert + 0.15 * f_rhythm + 0.10 * f_repeat
 }
 
 /// Encaje de la estructura con la "personalidad" del pack de Kenney elegido,
@@ -598,7 +608,6 @@ mod tests {
         assert_eq!(f.gaps, 0);
         assert!((f.linearity - 1.0).abs() < 1e-12);
         assert!(difficulty(&f, 4.0) < 0.05);
-        assert!(f.segment_variety < 0.05);
         assert_eq!(f.violations, 0);
     }
 
@@ -619,7 +628,7 @@ mod tests {
     fn el_ruido_puntua_peor_que_un_nivel_ordenado() {
         let mut rng = crate::rng::Rng::seed_from_u64(1);
         let ordenado = flat(120);
-        let mut ruido = crate::ga::init::uniform_level(120, &mut rng);
+        let mut ruido = crate::ga::init::tests::noise_level(120, &mut rng);
         crate::ga::init::repair(&mut ruido, false);
         let (fo, fr) = (feats(&ordenado), feats(&ruido));
         assert!(coherence(&fo, Style::Base) > coherence(&fr, Style::Base) + 0.3);

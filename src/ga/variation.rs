@@ -31,15 +31,30 @@ impl Crossover {
 
 /// Elige una columna de corte en `[lo, hi)`, prefiriendo costuras limpias.
 fn cut(a: &Level, b: &Level, lo: usize, hi: usize, rng: &mut Rng) -> usize {
-    let mut fallback = lo + rng.index(hi - lo);
-    for _ in 0..8 {
-        let c = lo + rng.index(hi - lo);
-        if a.ground_top(c - 1) == b.ground_top(c - 1) && a.ground_top(c) == b.ground_top(c) {
-            return c;
-        }
-        fallback = c;
+    // Columna de descanso común: suelo a la misma altura en ambos padres, sin
+    // peligros ni plataformas encima. Cortar ahí no parte ningún patrón (el
+    // cruce por grupos de ritmo propuesto en las notas de diseño).
+    let calm = |l: &Level, c: usize| {
+        let top = l.ground_top(c);
+        top < HEIGHT
+            && l.column(c)[..top]
+                .iter()
+                .all(|&t| matches!(t, Tile::Empty | Tile::Decor | Tile::Coin))
+    };
+    let ok = |c: usize| {
+        a.ground_top(c) == b.ground_top(c)
+            && a.ground_top(c - 1) == b.ground_top(c - 1)
+            && calm(a, c)
+            && calm(b, c)
+            && calm(a, c - 1)
+            && calm(b, c - 1)
+    };
+    let candidates: Vec<usize> = (lo..hi).filter(|&c| ok(c)).collect();
+    if candidates.is_empty() {
+        lo + rng.index(hi - lo)
+    } else {
+        candidates[rng.index(candidates.len())]
     }
-    fallback
 }
 
 /// Cruza `a` y `b` escribiendo los hijos en `ca` y `cb` (que ya deben ser copias
@@ -124,12 +139,10 @@ pub enum MacroOp {
     Gap,
     /// Subir o bajar el suelo en un tramo de columnas.
     Shift,
-    /// Plataforma flotante de 2 a 5 tiles.
-    Platform,
+    /// Escribe un patrón de diseño completo (ver [`crate::patterns`]).
+    Pattern,
     /// Enemigo sobre una superficie.
     Enemy,
-    /// Tramo de escalera.
-    Ladder,
     /// Copiar un tramo de columnas a otra posición (análogo a la mutación
     /// convolucional de Lucas y Volz, 2019).
     CopyBlock,
@@ -141,12 +154,11 @@ pub enum MacroOp {
 
 impl MacroOp {
     /// Todos los operadores macro.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 7] = [
         Self::Gap,
         Self::Shift,
-        Self::Platform,
+        Self::Pattern,
         Self::Enemy,
-        Self::Ladder,
         Self::CopyBlock,
         Self::Coins,
         Self::Decor,
@@ -230,27 +242,25 @@ pub fn macro_mutation(level: &mut Level, op: MacroOp, rng: &mut Rng) {
                 }
             }
         }
-        MacroOp::Platform => {
-            let y = 3 + rng.index(HEIGHT - 6);
-            for xx in x..(x + 2 + rng.index(4)).min(hi) {
-                if level.get(xx, y) == Tile::Empty {
-                    level.set(xx, y, Tile::Platform);
-                }
+        MacroOp::Pattern => {
+            // Escribe un patrón de la biblioteca a partir de la columna x con la
+            // altura de suelo de la columna anterior. Después suaviza la unión.
+            use crate::patterns::{self, Kind};
+            let kind = Kind::ALL[rng.index(Kind::ALL.len())];
+            if x + patterns::max_width(kind) < hi {
+                let prev = level.ground_top(x - 1);
+                let g = if prev >= HEIGHT {
+                    crate::ga::init::SAFE_GROUND
+                } else {
+                    prev
+                };
+                let b = patterns::build(level, kind, x, g, rng.f64(), rng);
+                patterns::smooth_junction(level, x + b.width - 1);
             }
         }
         MacroOp::Enemy => {
             if let Some(y) = surface(level, x) {
                 level.set(x, y, Tile::Enemy);
-            }
-        }
-        MacroOp::Ladder => {
-            if let Some(base) = surface(level, x) {
-                let len = 2 + rng.index(4);
-                for y in base.saturating_sub(len - 1)..=base {
-                    if level.get(x, y) == Tile::Empty {
-                        level.set(x, y, Tile::Ladder);
-                    }
-                }
             }
         }
         MacroOp::CopyBlock => {

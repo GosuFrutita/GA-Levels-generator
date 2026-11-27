@@ -10,9 +10,7 @@ pub const SAFE_GROUND: usize = HEIGHT - 2;
 pub fn write_safe_zones(level: &mut Level) {
     let w = level.width();
     for x in (0..SAFE_COLS).chain(w - SAFE_COLS..w) {
-        let col = level.column_mut(x);
-        col.fill(Tile::Empty);
-        col[SAFE_GROUND..].fill(Tile::Ground);
+        level.set_ground_column(x, SAFE_GROUND);
     }
     level.set(1, SAFE_GROUND - 1, Tile::Start);
     level.set(w - 2, SAFE_GROUND - 1, Tile::Goal);
@@ -43,32 +41,39 @@ pub fn repair(level: &mut Level, full: bool) {
                 col[y] = Tile::Platform;
             }
         }
-        // Objetos que necesitan apoyo sólido: caen.
-        for y in (0..HEIGHT).rev() {
-            let t = col[y];
-            if !matches!(t, Tile::Enemy | Tile::Hazard | Tile::Decor) {
-                continue;
+    }
+    if full {
+        // Quitar una plataforma puede dejar aislada a su vecina: hasta que no cambie.
+        loop {
+            let before = level.tiles().to_vec();
+            repair_platforms(level);
+            if level.tiles() == before.as_slice() {
+                break;
             }
-            let mut ny = y;
-            while ny + 1 < HEIGHT && col[ny + 1] == Tile::Empty {
-                ny += 1;
-            }
-            let supported = ny + 1 < HEIGHT && col[ny + 1].is_solid();
-            col[y] = Tile::Empty;
-            if supported {
-                col[ny] = t;
+        }
+        // Las escaleras dependen de las plataformas (salidas): van después.
+        repair_ladders(level);
+        // Al final, los objetos que necesitan apoyo sólido caen.
+        for x in SAFE_COLS..w - SAFE_COLS {
+            let col = level.column_mut(x);
+            for y in (0..HEIGHT).rev() {
+                let t = col[y];
+                if !matches!(t, Tile::Enemy | Tile::Hazard | Tile::Decor) {
+                    continue;
+                }
+                let mut ny = y;
+                while ny + 1 < HEIGHT && col[ny + 1] == Tile::Empty {
+                    ny += 1;
+                }
+                let supported = ny + 1 < HEIGHT && col[ny + 1].is_solid();
+                col[y] = Tile::Empty;
+                if supported {
+                    col[ny] = t;
+                }
             }
         }
     }
-    if full {
-        repair_ladders(level);
-    }
     write_safe_zones(level);
-}
-
-/// ¿Se puede estar de pie en `(x, y)`?
-fn can_stand(level: &Level, x: i32, y: i32) -> bool {
-    y >= 0 && level.get_or_empty(x, y).is_passable() && level.get_or_empty(x, y + 1).is_support()
 }
 
 /// Repara las escaleras: elimina los tramos que no apoyan en algo sólido,
@@ -91,16 +96,9 @@ pub fn repair_ladders(level: &mut Level) {
             let bottom = y - 1;
             let xi = x as i32;
             let supported = y < HEIGHT && level.get(x, y).is_solid();
-            let exit = |l: &Level, t: usize| {
-                let ti = t as i32;
-                can_stand(l, xi - 1, ti)
-                    || can_stand(l, xi + 1, ti)
-                    || can_stand(l, xi - 1, ti - 1)
-                    || can_stand(l, xi + 1, ti - 1)
-            };
             let mut new_top = top;
             if supported {
-                while new_top <= bottom && !exit(level, new_top) {
+                while new_top <= bottom && !level.ladder_exit(xi, new_top as i32) {
                     new_top += 1;
                 }
             } else {
@@ -116,83 +114,70 @@ pub fn repair_ladders(level: &mut Level) {
     }
 }
 
-/// Genera un nivel aleatorio "plausible" con un generador constructivo:
-/// superficie por paseo aleatorio con huecos, plataformas, enemigos, peligros,
-/// monedas, escaleras y decoración. Es la distribución inicial del GA y de la
-/// búsqueda aleatoria (para que la comparación sea justa).
+/// Repara las plataformas flotantes según lo observado en niveles hechos a
+/// mano: no hay plataformas aisladas de un tile y bajo cada plataforma quedan al
+/// menos 2 filas libres antes del suelo (si no, bloquean el paso o el salto).
+pub fn repair_platforms(level: &mut Level) {
+    let w = level.width();
+    for x in SAFE_COLS..w - SAFE_COLS {
+        for y in 1..HEIGHT {
+            if level.get(x, y) != Tile::Platform {
+                continue;
+            }
+            let (xi, yi) = (x as i32, y as i32);
+            let isolated = level.get_or_empty(xi - 1, yi) != Tile::Platform
+                && level.get_or_empty(xi + 1, yi) != Tile::Platform;
+            let cramped = (1..=2).any(|d| level.get_or_empty(xi, yi + d) == Tile::Ground);
+            if isolated || cramped {
+                level.set(x, y, Tile::Empty);
+            }
+        }
+    }
+}
+
+/// Genera un nivel con estructura de diseño a partir de la biblioteca de
+/// patrones ([`crate::patterns`]): se elige un tema (mecánica A y mecánica B) y
+/// se encadenan grupos de ritmo de 1 a 3 patrones separados por descansos,
+/// siguiendo cuatro actos (presentar, desarrollar, giro y conclusión) con la
+/// dificultad subiendo hasta el giro y bajando al final. Es la distribución
+/// inicial del GA y de la búsqueda aleatoria (para que la comparación sea justa).
 pub fn random_level(width: usize, rng: &mut Rng) -> Level {
+    use crate::patterns::{self, Kind};
     let style = Style::ALL[rng.index(Style::COUNT)];
     let mut l = Level::empty(width, style);
-    let lo = HEIGHT - 6; // superficie más alta permitida al iniciar
-    let mut surface = SAFE_GROUND;
-    let mut x = SAFE_COLS;
+    write_safe_zones(&mut l);
+    let theme = patterns::THEMES[rng.index(patterns::THEMES.len())];
     let end = width - SAFE_COLS;
+    let mut x = SAFE_COLS;
+    let mut g = SAFE_GROUND;
+    // Descanso inicial.
+    let b = patterns::build(&mut l, Kind::Rest, x, g, 0.0, rng);
+    x += b.width;
     while x < end {
-        if rng.chance(0.07) {
-            // Hueco de 1 a 4 columnas.
-            let gap = 1 + rng.index(4);
-            x += gap.min(end - x);
-            continue;
-        }
-        if rng.chance(0.15) {
-            let step = rng.range_i32(-2, 2);
-            surface = (surface as i32 + step).clamp(lo as i32, HEIGHT as i32 - 1) as usize;
-        }
-        l.column_mut(x)[surface..].fill(Tile::Ground);
-        x += 1;
-    }
-    let span = end - SAFE_COLS;
-    let count = |per: f64, rng: &mut Rng| -> usize {
-        let mean = span as f64 * per;
-        (mean * (0.5 + rng.f64())).round() as usize
-    };
-    // Plataformas flotantes.
-    for _ in 0..count(0.08, rng) {
-        let len = 2 + rng.index(5);
-        let x0 = SAFE_COLS + rng.index(span.saturating_sub(len).max(1));
-        let y = 3 + rng.index(HEIGHT - 6);
-        for xx in x0..(x0 + len).min(end) {
-            if l.get(xx, y) == Tile::Empty {
-                l.set(xx, y, Tile::Platform);
+        let progress = (x - SAFE_COLS) as f64 / (end - SAFE_COLS) as f64;
+        let act = ((progress * 4.0) as usize).min(3);
+        let difficulty = [0.1, 0.4, 0.8, 0.3][act];
+        let group = 1 + rng.index(3);
+        for _ in 0..group {
+            let kind = patterns::pick(rng, theme, act);
+            if x + patterns::max_width(kind) + 3 > end {
+                break;
             }
+            let b = patterns::build(&mut l, kind, x, g, difficulty, rng);
+            x += b.width;
+            g = b.exit;
         }
-    }
-    // Objetos colocados sobre superficies.
-    let place_on_surface = |tile: Tile, n: usize, rng: &mut Rng, l: &mut Level| {
-        for _ in 0..n {
-            let x = SAFE_COLS + rng.index(span);
-            let col = l.column(x);
-            // Superficies disponibles en la columna: celda vacía con sólido debajo.
-            let tops: Vec<usize> = (0..HEIGHT - 1)
-                .filter(|&y| col[y] == Tile::Empty && col[y + 1].is_solid())
-                .collect();
-            if !tops.is_empty() {
-                let y = tops[rng.index(tops.len())];
-                l.set(x, y, tile);
+        // Descanso entre grupos (o relleno final si no cabe nada más).
+        if x + patterns::max_width(Kind::Rest) > end {
+            for cx in x..end {
+                l.set_ground_column(cx, g);
             }
+            break;
         }
-    };
-    place_on_surface(Tile::Enemy, count(0.05, rng), rng, &mut l);
-    place_on_surface(Tile::Hazard, count(0.03, rng), rng, &mut l);
-    place_on_surface(Tile::Decor, count(0.08, rng), rng, &mut l);
-    // Monedas: en el aire, 1-2 celdas sobre una superficie.
-    for _ in 0..count(0.12, rng) {
-        let x = SAFE_COLS + rng.index(span);
-        let y = 1 + rng.index(HEIGHT - 3);
-        if l.get(x, y) == Tile::Empty {
-            l.set(x, y, Tile::Coin);
-        }
+        let b = patterns::build(&mut l, Kind::Rest, x, g, 0.0, rng);
+        x += b.width;
     }
-    // Escaleras: tramos verticales que bajan hasta un apoyo.
-    for _ in 0..count(0.015, rng) {
-        let x = SAFE_COLS + rng.index(span);
-        let top = 2 + rng.index(HEIGHT / 2);
-        let mut y = top;
-        while y < HEIGHT && l.get(x, y) == Tile::Empty {
-            l.set(x, y, Tile::Ladder);
-            y += 1;
-        }
-    }
+    patterns::smooth_junction(&mut l, end - 1);
     repair(&mut l, true);
     l
 }
@@ -211,20 +196,8 @@ pub fn window(level: &Level, x0: usize, width: usize) -> Level {
     out
 }
 
-/// Nivel completamente aleatorio (cada celda uniforme entre los tiles
-/// evolucionables). Línea base "sin conocimiento del dominio".
-pub fn uniform_level(width: usize, rng: &mut Rng) -> Level {
-    let style = Style::ALL[rng.index(Style::COUNT)];
-    let mut l = Level::empty(width, style);
-    for t in l.tiles_mut() {
-        *t = Tile::EVOLVABLE[rng.index(Tile::EVOLVABLE.len())];
-    }
-    repair(&mut l, false);
-    l
-}
-
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -269,10 +242,21 @@ mod tests {
         assert!(kept.len() >= 2);
     }
 
+    /// Nivel de ruido: cada celda uniforme entre los tiles evolucionables.
+    pub(crate) fn noise_level(width: usize, rng: &mut Rng) -> Level {
+        let style = Style::ALL[rng.index(Style::COUNT)];
+        let mut l = Level::empty(width, style);
+        for t in l.tiles_mut() {
+            *t = Tile::EVOLVABLE[rng.index(Tile::EVOLVABLE.len())];
+        }
+        repair(&mut l, false);
+        l
+    }
+
     #[test]
     fn reparacion_idempotente() {
         let mut rng = Rng::seed_from_u64(2);
-        let mut l = uniform_level(60, &mut rng);
+        let mut l = noise_level(60, &mut rng);
         repair(&mut l, true);
         let once = l.clone();
         repair(&mut l, true);

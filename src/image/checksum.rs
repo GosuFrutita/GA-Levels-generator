@@ -52,13 +52,6 @@ impl Default for Crc32 {
     }
 }
 
-/// CRC-32 de un bloque completo.
-pub fn crc32(bytes: &[u8]) -> u32 {
-    let mut c = Crc32::new();
-    c.update(bytes);
-    c.finish()
-}
-
 /// Adler-32 (RFC 1950).
 pub fn adler32(bytes: &[u8]) -> u32 {
     const MOD: u32 = 65_521;
@@ -78,6 +71,12 @@ pub fn adler32(bytes: &[u8]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut c = Crc32::new();
+        c.update(bytes);
+        c.finish()
+    }
 
     #[test]
     fn crc_de_iend() {

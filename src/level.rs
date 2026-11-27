@@ -67,18 +67,17 @@ impl Tile {
     /// Número de tipos.
     pub const COUNT: usize = 10;
 
-    /// Convierte desde el discriminante.
-    pub const fn from_u8(v: u8) -> Option<Self> {
-        if (v as usize) < Self::COUNT {
-            Some(Self::ALL[v as usize])
-        } else {
-            None
-        }
-    }
-
-    /// ¿Bloquea el movimiento (no se puede ocupar)?
+    /// ¿Es un bloque estructural (suelo o plataforma)?
     pub const fn is_solid(self) -> bool {
         matches!(self, Self::Ground | Self::Platform)
+    }
+
+    /// ¿Bloquea el movimiento en todas direcciones? Solo el suelo: las
+    /// plataformas son *de un solo sentido* (se atraviesan al subir o al
+    /// caminar y sostienen al caer encima), como en el género y en el nivel de
+    /// ejemplo `platformer-starter` (colisión `one_way` en Godot).
+    pub const fn blocks(self) -> bool {
+        matches!(self, Self::Ground)
     }
 
     /// ¿Se puede estar de pie encima?
@@ -93,7 +92,7 @@ impl Tile {
 
     /// ¿El jugador puede ocupar la celda sin morir?
     pub const fn is_passable(self) -> bool {
-        !self.is_solid() && !self.is_lethal()
+        !self.blocks() && !self.is_lethal()
     }
 
     /// Carácter en el formato de texto.
@@ -150,15 +149,6 @@ impl Style {
     pub const ALL: [Self; 4] = [Self::Base, Self::Farm, Self::Food, Self::Industrial];
     /// Número de estilos.
     pub const COUNT: usize = 4;
-
-    /// Convierte desde el índice.
-    pub const fn from_index(i: usize) -> Option<Self> {
-        if i < Self::COUNT {
-            Some(Self::ALL[i])
-        } else {
-            None
-        }
-    }
 
     /// Índice del estilo.
     pub const fn index(self) -> usize {
@@ -321,6 +311,34 @@ impl Level {
         y
     }
 
+    /// Escribe una columna de suelo con la superficie en la fila `g` (la columna
+    /// queda vacía por encima); con `g == HEIGHT` la columna es un hueco.
+    ///
+    /// # Panics
+    ///
+    /// Si `x` está fuera del nivel.
+    pub fn set_ground_column(&mut self, x: usize, g: usize) {
+        let col = self.column_mut(x);
+        col.fill(Tile::Empty);
+        if g < HEIGHT {
+            col[g..].fill(Tile::Ground);
+        }
+    }
+
+    /// ¿Se puede estar de pie en `(x, y)`? (celda atravesable con apoyo debajo).
+    pub fn can_stand(&self, x: i32, y: i32) -> bool {
+        y >= 0 && self.get_or_empty(x, y).is_passable() && self.get_or_empty(x, y + 1).is_support()
+    }
+
+    /// ¿Tiene salida una escalera cuya celda superior es `(x, y)`? Desde lo alto
+    /// se sale a un lado o, si encima hay hueco, hacia arriba en diagonal.
+    pub fn ladder_exit(&self, x: i32, y: i32) -> bool {
+        self.can_stand(x - 1, y)
+            || self.can_stand(x + 1, y)
+            || self.can_stand(x - 1, y - 1)
+            || self.can_stand(x + 1, y - 1)
+    }
+
     /// Lee un nivel en formato texto: primera línea `estilo=<nombre>` opcional,
     /// después `HEIGHT` líneas de igual longitud con un carácter por tile.
     ///
@@ -398,7 +416,6 @@ mod tests {
     fn caracteres_unicos() {
         for a in Tile::ALL {
             assert_eq!(Tile::from_char(a.to_char()), Some(a));
-            assert_eq!(Tile::from_u8(a as u8), Some(a));
         }
     }
 
@@ -407,5 +424,9 @@ mod tests {
         assert!(Tile::Ladder.is_support() && Tile::Ladder.is_passable());
         assert!(!Tile::Enemy.is_passable() && !Tile::Enemy.is_support());
         assert!(Tile::Ground.is_solid() && !Tile::Coin.is_solid());
+        // Plataformas de un solo sentido: apoyo, pero se pueden atravesar.
+        assert!(
+            Tile::Platform.is_support() && Tile::Platform.is_passable() && !Tile::Platform.blocks()
+        );
     }
 }

@@ -52,44 +52,19 @@ pub fn features(level: &Level, physics: Physics) -> [f64; NF] {
     let tops: Vec<usize> = (0..w).map(|x| level.ground_top(x)).collect();
     let mut f = [0.0; NF];
     // Huecos (columnas sin suelo) y vanos (columnas sin ningún apoyo).
-    let (mut gaps, mut gap_sum, mut gap_max, mut long_gaps, mut run) =
-        (0_u32, 0_u32, 0_u32, 0_u32, 0_u32);
-    let (mut span_max, mut long_spans, mut span) = (0_u32, 0_u32, 0_u32);
-    let any_support = |x: usize| level.column(x).iter().any(|t| t.is_support());
-    // Se recorre una columna más que la región evolutiva para cerrar la última racha.
-    for (x, &top) in tops
-        .iter()
-        .enumerate()
-        .take(w - SAFE_COLS + 1)
-        .skip(SAFE_COLS)
-    {
-        let gap = x < w - SAFE_COLS && top == HEIGHT;
-        if gap {
-            run += 1;
-        } else if run > 0 {
-            gaps += 1;
-            gap_sum += run;
-            gap_max = gap_max.max(run);
-            long_gaps += u32::from(run as usize > jl);
-            run = 0;
-        }
-        let bare = x < w - SAFE_COLS && !any_support(x);
-        if bare {
-            span += 1;
-        } else if span > 0 {
-            span_max = span_max.max(span);
-            long_spans += u32::from(span as usize > jl);
-            span = 0;
-        }
-    }
-    f[0] = f64::from(gaps) / wf * 10.0;
-    f[1] = f64::from(gap_max);
-    f[2] = if gaps == 0 {
+    let gaps = crate::metrics::column_runs(level, |x| tops[x] == HEIGHT);
+    let spans =
+        crate::metrics::column_runs(level, |x| !level.column(x).iter().any(|t| t.is_support()));
+    let long = |runs: &[u32]| runs.iter().filter(|&&r| r as usize > jl).count() as f64;
+    let n_gaps = gaps.len() as f64;
+    f[0] = n_gaps / wf * 10.0;
+    f[1] = f64::from(gaps.iter().copied().max().unwrap_or(0));
+    f[2] = if gaps.is_empty() {
         0.0
     } else {
-        f64::from(gap_sum) / f64::from(gaps)
+        f64::from(gaps.iter().sum::<u32>()) / n_gaps
     };
-    f[3] = f64::from(long_gaps);
+    f[3] = long(&gaps);
     // Subidas entre columnas consecutivas con suelo.
     let (mut rise_max, mut high_rises) = (0_i64, 0);
     for x in 1..w {
@@ -144,8 +119,8 @@ pub fn features(level: &Level, physics: Physics) -> [f64; NF] {
     f[16] = ground_hazards as f64 / wf * 10.0;
     f[17] = low_ceiling as f64 / wf * 10.0;
     f[18] = count(Tile::Coin) / wf;
-    f[19] = f64::from(span_max);
-    f[20] = f64::from(long_spans);
+    f[19] = f64::from(spans.iter().copied().max().unwrap_or(0));
+    f[20] = long(&spans);
     f
 }
 

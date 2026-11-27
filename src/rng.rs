@@ -75,29 +75,6 @@ impl Rng {
         result
     }
 
-    /// Avanza el estado 2^128 pasos: produce subsecuencias que no se solapan.
-    pub fn jump(&mut self) {
-        const JUMP: [u64; 4] = [
-            0x180e_c6d3_3cfd_0aba,
-            0xd5a6_1266_f0c9_392c,
-            0xa958_2618_e03f_c9aa,
-            0x39ab_dc45_29b1_661c,
-        ];
-        let mut acc = [0_u64; 4];
-        for word in JUMP {
-            for b in 0..64 {
-                if word & (1_u64 << b) != 0 {
-                    for (a, s) in acc.iter_mut().zip(self.s) {
-                        *a ^= s;
-                    }
-                }
-                self.next_u64();
-            }
-        }
-        self.s = acc;
-        self.spare_normal = None;
-    }
-
     /// Uniforme en `[0, 1)` con 53 bits de precisión.
     #[inline]
     pub fn f64(&mut self) -> f64 {
@@ -229,14 +206,6 @@ mod tests {
         let var = xs.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / f64::from(n);
         assert!(mean.abs() < 0.01, "media {mean}");
         assert!((var - 1.0).abs() < 0.02, "varianza {var}");
-    }
-
-    #[test]
-    fn jump_cambia_el_flujo() {
-        let mut a = Rng::seed_from_u64(1);
-        let mut b = a.clone();
-        b.jump();
-        assert_ne!(a.next_u64(), b.next_u64());
     }
 
     #[test]

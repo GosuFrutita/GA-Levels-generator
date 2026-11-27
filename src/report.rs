@@ -13,7 +13,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 /// Cabecera del CSV del historial.
-pub const HISTORY_HEADER: &str = "generacion,evaluaciones,mejor,mejor_historico,media,peor,desv,jugables,diversidad,entropia_celdas,entropia_estilo,pradera,granja,dulce,industrial,intensidad_seleccion,mejor_q,mejor_d,mejor_v,mejor_c";
+pub const HISTORY_HEADER: &str = "generacion,evaluaciones,mejor,mejor_historico,media,peor,desv,jugables,diversidad,entropia_celdas,entropia_estilo,pradera,granja,dulce,industrial,intensidad_seleccion,mejor_q,mejor_d,mejor_v,mejor_c,uso_hueco,uso_altura,uso_patron,uso_enemigo,uso_copia,uso_monedas,uso_decoracion";
 
 /// Historial en CSV (separador coma, punto decimal).
 pub fn history_csv(history: &[GenStats]) -> String {
@@ -42,6 +42,10 @@ pub fn history_csv(history: &[GenStats]) -> String {
         let _ = write!(s, ",{:.6}", h.selection_intensity);
         for o in h.best_objectives {
             let _ = write!(s, ",{o:.6}");
+        }
+        // Uso de cada operador macro según el bandido (ceros sin bandido).
+        for u in h.macro_usage {
+            let _ = write!(s, ",{u:.4}");
         }
         s.push('\n');
     }

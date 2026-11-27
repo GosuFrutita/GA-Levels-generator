@@ -1016,6 +1016,10 @@ fn experimento(mut args: Args) -> Result<()> {
         eprintln!(" en {:.1} s", t0.elapsed().as_secs_f64());
         let dir = out.join(name);
         let mut rep = experiment::analyze(&dir, title, &variants, &results)?;
+        if name == "e2" {
+            rep.push_str(&experiment::e2_selection_pressure(&variants, &results));
+            std::fs::write(dir.join("informe.txt"), &rep)?;
+        }
         if name == "e5" {
             experiment::e5_heatmap(&dir, &variants, &results)?;
         }

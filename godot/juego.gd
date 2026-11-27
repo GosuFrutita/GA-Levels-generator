@@ -68,7 +68,6 @@ var sprite_bandera: Sprite2D
 var texturas_jugador: Array = []
 var texturas_enemigo: Array = []
 var texturas_bandera: Array = []
-var camino: Line2D
 var camara: Camera2D
 var hud: Label
 var aviso: Label
@@ -77,12 +76,6 @@ var aviso: Label
 var hilo: Thread = null
 var siguiente := ""
 var contador_generados := 0
-
-# Prueba automática (modo sin pantalla para verificar la física).
-var prueba_automatica := false
-var salir_tras := -1
-var captura := ""
-var rotar := false
 
 
 func _ready() -> void:
@@ -93,14 +86,6 @@ func _ready() -> void:
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--nivel="):
 			nivel_fijo = a.trim_prefix("--nivel=")
-		elif a == "--prueba-automatica":
-			prueba_automatica = true
-		elif a.begins_with("--salir-tras="):
-			salir_tras = int(a.trim_prefix("--salir-tras="))
-		elif a == "--rotar":
-			rotar = true
-		elif a.begins_with("--captura="):
-			captura = a.trim_prefix("--captura=")
 	_configurar_controles()
 	_crear_nodos()
 	if nivel_fijo != "":
@@ -130,7 +115,6 @@ func _configurar_controles() -> void:
 		"reiniciar": [KEY_R],
 		"siguiente": [KEY_N, KEY_ENTER],
 		"marcar": [KEY_F],
-		"camino": [KEY_P],
 		"salir": [KEY_ESCAPE],
 	}
 	for accion in mapa:
@@ -145,12 +129,6 @@ func _configurar_controles() -> void:
 func _crear_nodos() -> void:
 	capa_nivel = Node2D.new()
 	add_child(capa_nivel)
-	camino = Line2D.new()
-	camino.width = 2.0
-	camino.default_color = Color(1.0, 0.85, 0.15, 0.85)
-	camino.visible = false
-	camino.z_index = 5
-	add_child(camino)
 	sprite_jugador = Sprite2D.new()
 	sprite_jugador.centered = false
 	sprite_jugador.z_index = 10
@@ -281,10 +259,6 @@ func _cargar(ruta: String) -> void:
 					sprite_bandera.texture = texturas_bandera[1]
 					sprite_bandera.position = Vector2(x * T, (y - 1) * T)
 					capa_nivel.add_child(sprite_bandera)
-	var puntos := PackedVector2Array()
-	for c in nivel["trayectoria"]:
-		puntos.append(Vector2(c[0] * T + T / 2.0, c[1] * T + T / 2.0))
-	camino.points = puntos
 	camara.limit_left = 0
 	camara.limit_top = 0
 	camara.limit_right = int(ancho * T)
@@ -323,20 +297,21 @@ func _tile(x: int, y: int) -> String:
 	return filas[y][x]
 
 
+# Solo el suelo bloquea en todas direcciones; las plataformas ("S") son de un
+# solo sentido: se atraviesan al subir o al caminar y sostienen al caer encima.
 func _solido(x: int, y: int) -> bool:
 	if x < 0 or x >= ancho:
 		return true # los lados del nivel son paredes
-	var t := _tile(x, y)
-	return t == "X" or t == "S"
+	return _tile(x, y) == "X"
 
 
 func _apoyo(x: int, y: int) -> bool:
-	return _solido(x, y) or _tile(x, y) == "L"
+	return _solido(x, y) or _tile(x, y) == "S" or _tile(x, y) == "L"
 
 
 func _libre_con_apoyo(x: int, y: int) -> bool:
 	var t := _tile(x, y)
-	var libre := not (t == "X" or t == "S" or t == "^" or t == "E") and x >= 0 and x < ancho
+	var libre := not (t == "X" or t == "^" or t == "E") and x >= 0 and x < ancho
 	return libre and _apoyo(x, y + 1)
 
 
@@ -360,11 +335,13 @@ func _celdas_tocadas(margen: float) -> Array:
 	return out
 
 
-func _tope_escalera_bajo(x: float, pies: float) -> bool:
+# Apoyo de un solo sentido bajo los pies: una plataforma o el tope de una escalera.
+func _apoyo_un_sentido_bajo(x: float, pies: float) -> bool:
 	var cy := _celda(pies)
 	for fx in [x + 1.0, x + ANCHO_J - 1.0]:
 		var cx := _celda(fx)
-		if _tile(cx, cy) == "L" and _tile(cx, cy - 1) != "L":
+		var t := _tile(cx, cy)
+		if t == "S" or (t == "L" and _tile(cx, cy - 1) != "L"):
 			return true
 	return false
 
@@ -372,8 +349,6 @@ func _tope_escalera_bajo(x: float, pies: float) -> bool:
 # --- Bucle del juego ---------------------------------------------------------
 
 func _controles() -> Dictionary:
-	if prueba_automatica:
-		return _piloto_automatico()
 	return {
 		"izq": Input.is_action_pressed("izquierda"),
 		"der": Input.is_action_pressed("derecha"),
@@ -383,37 +358,10 @@ func _controles() -> Dictionary:
 	}
 
 
-# Política sencilla para la prueba automática: correr a la derecha y saltar
-# cuando delante no hay suelo o hay un obstáculo.
-func _piloto_automatico() -> Dictionary:
-	var delante := _celda(px + ANCHO_J + 4.0)
-	var fila_pies := _celda(py + ALTO_J + 1.0)
-	var hueco := not _apoyo(delante, fila_pies)
-	var muro := _solido(delante, _celda(py + ALTO_J - 1.0))
-	var fila := _celda(py + ALTO_J - 1.0)
-	var peligro := false
-	for dx in range(0, 2):
-		var t := _tile(delante + dx, fila)
-		if t == "^" or t == "E":
-			peligro = true
-	return {"izq": false, "der": true, "arriba": false, "abajo": false, "salto": hueco or muro or peligro or vy < 0.0}
-
-
 func _physics_process(_delta: float) -> void:
 	if nivel.is_empty():
 		return
-	if salir_tras >= 0:
-		salir_tras -= 1
-		if salir_tras < 0:
-			print("prueba: nivel=%d muertes=%d ganado=%s ticks=%d" % [numero_nivel, muertes, ganado, ticks])
-			if captura != "":
-				get_viewport().get_texture().get_image().save_png(captura)
-			get_tree().quit(0 if ganado else 1)
-			return
 	anim += 1
-	# Prueba del paso de nivel: salta al siguiente cada 200 ticks.
-	if rotar and anim % 200 == 0:
-		_pasar_al_siguiente()
 	_mover_enemigos()
 	if ganado:
 		_actualizar_vista()
@@ -477,9 +425,11 @@ func _mover_y(dy: float, abajo: bool) -> void:
 	var ny := py + dy
 	var pies := py + ALTO_J
 	en_suelo = false
-	var sobre_escalera := dy > 0.0 and not abajo and not en_escalera \
-		and _celda(pies - 0.01) < _celda(ny + ALTO_J) and _tope_escalera_bajo(px, ny + ALTO_J)
-	if _caja_choca(px, ny, ANCHO_J, ALTO_J) or sobre_escalera:
+	# Aterrizaje sobre un apoyo de un solo sentido: solo al bajar y cruzando su
+	# borde superior; con la flecha abajo se deja caer a través.
+	var sobre_plataforma := dy > 0.0 and not abajo and not en_escalera \
+		and _celda(pies - 0.01) < _celda(ny + ALTO_J) and _apoyo_un_sentido_bajo(px, ny + ALTO_J)
+	if _caja_choca(px, ny, ANCHO_J, ALTO_J) or sobre_plataforma:
 		if dy > 0.0:
 			py = _celda(ny + ALTO_J) * T - ALTO_J
 			en_suelo = true
@@ -563,11 +513,11 @@ func _actualizar_vista() -> void:
 	camara.position = Vector2(px + get_viewport_rect().size.x / zoom * 0.15, alto * T / 2.0)
 	var m: Dictionary = nivel["metricas"]
 	var total_monedas := int(m["monedas"])
-	hud.text = "Nivel %d · %s · %d columnas · D=%.2f (objetivo %.2f) · %d saltos según el BFS\n" % [
-		numero_nivel, nivel["estilo"], ancho, m["dificultad"], nivel["dificultad_objetivo"], int(m["saltos"])
+	hud.text = "Nivel %d · %s · %d columnas · dificultad medida %.2f\n" % [
+		numero_nivel, nivel["estilo"], ancho, m["dificultad"]
 	] + "Muertes %d · monedas %d/%d · %.1f s%s\n" % [
 		muertes, total_monedas - monedas.size(), total_monedas, ticks / 60.0, " · MARCADO" if marcado else ""
-	] + "←→ moverse · espacio saltar · ↑↓ escaleras · R reiniciar · N siguiente · F marcar · P camino · Esc salir"
+	] + "←→ moverse · espacio saltar · ↑↓ escaleras · R reiniciar · N siguiente · F marcar · Esc salir"
 	if ganado and nivel_fijo == "" and not _siguiente_listo() and hilo != null:
 		aviso.text = "¡Nivel superado! Generando el siguiente..."
 
@@ -581,8 +531,6 @@ func _unhandled_input(ev: InputEvent) -> void:
 		return
 	elif ev.is_action_pressed("reiniciar"):
 		_reaparecer()
-	elif ev.is_action_pressed("camino"):
-		camino.visible = not camino.visible
 	elif ev.is_action_pressed("marcar"):
 		_marcar()
 	elif ev.is_action_pressed("siguiente"):

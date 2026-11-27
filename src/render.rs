@@ -428,20 +428,6 @@ pub fn render(level: &Level, sets: &Tilesets, opts: &RenderOptions) -> Image {
     img
 }
 
-/// Dibuja una tira de todos los sprites de una hoja con su índice (para inspección).
-pub fn contact_sheet(sets: &Tilesets, style: Style, scale: u32) -> Image {
-    let sheet = &sets.sheets[style.index()];
-    let cols = 16_u32;
-    let rows = (sheet.len() as u32).div_ceil(cols);
-    let cell = TILE * scale + 2;
-    let mut img = Image::new(cols * cell, rows * cell, [40, 40, 60, 255]);
-    for (i, spr) in sheet.iter().enumerate() {
-        let (c, r) = (i as u32 % cols, i as u32 / cols);
-        img.draw(spr, i64::from(c * cell + 1), i64::from(r * cell + 1), scale);
-    }
-    img
-}
-
 impl Tilesets {
     /// Color representativo de un tile lógico en un estilo (color medio de su
     /// sprite), para miniaturas y para el visor de terminal.

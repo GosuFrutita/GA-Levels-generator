@@ -181,7 +181,7 @@ impl<'a> Evaluator<'a> {
         let max_jump = f64::from(self.checker.physics().jump_length);
         let d = metrics::difficulty(&features, max_jump);
         let f_dif = metrics::bell(d, t.difficulty, t.difficulty_sigma);
-        let var = metrics::variety(&features, t);
+        let var = metrics::variety(&features);
         let coh = metrics::coherence(&features, level.style);
         let fit = metrics::style_fit(&features, level.style);
         let external = |scorer: Option<&dyn Scorer>, weight: f64| match scorer {
