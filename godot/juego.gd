@@ -8,10 +8,12 @@
 #
 # Al empezar se elige el modo. En el infinito los niveles se generan con
 # `nivelga generar` en un hilo mientras se juega, de modo que siempre hay uno
-# nuevo y distinto preparado. En el de evolución se juega una misma ejecución
-# del GA etapa a etapa: parte de una población de ruido (tiles al azar) y
-# muestra un individuo típico de ella y el mejor de varias generaciones hasta
-# la última. Cada partida se
+# nuevo y distinto preparado. En el de evolución se juegan las etapas guardadas
+# en godot/evolucion/ de una misma ejecución del GA, que parte de una población
+# de ruido (tiles al azar): un individuo típico de ella y el mejor de varias
+# generaciones hasta la última, con los datos de cada etapa en el marcador. La
+# serie se calcula antes con `nivelga generar --evolucion`, nunca mientras se
+# juega. Cada partida se
 # registra en resultados/partidas.csv para comparar la dificultad medida (D)
 # con la experiencia real de quien juega.
 extends Node2D
@@ -43,6 +45,7 @@ var numero_nivel := 0
 var nivel_fijo := ""
 # "" mientras se muestra el menú, "infinito" o "evolucion".
 var modo := ""
+var dir_evolucion := ""
 var etapas: PackedStringArray = PackedStringArray()
 var etapa := 0
 
@@ -92,6 +95,7 @@ func _ready() -> void:
 	raiz = ProjectSettings.globalize_path("res://").path_join("..").simplify_path()
 	binario = raiz.path_join("target/release/nivelga")
 	dir_juego = raiz.path_join("resultados/juego")
+	dir_evolucion = raiz.path_join("godot/evolucion")
 	DirAccess.make_dir_recursive_absolute(dir_juego)
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--nivel="):
@@ -117,9 +121,9 @@ func _mostrar_menu() -> void:
 	monedas.clear()
 	sprite_jugador.visible = false
 	capa_depuracion.visible = false
-	hud.text = ""
+	hud.visible = false
 	aviso.text = "Elige un modo:\n\n1  Infinito: un nivel nuevo y distinto tras otro\n" \
-		+ "2  Evolución: una ejecución del GA, desde ruido puro hasta el nivel final\n\nEsc salir"
+		+ "2  Evolución: etapas guardadas de una ejecución del GA, desde ruido hasta el nivel final\n\nEsc salir"
 
 
 func _empezar_infinito() -> void:
@@ -131,22 +135,25 @@ func _empezar_infinito() -> void:
 		return
 	aviso.text = "Generando el primer nivel..."
 	await get_tree().process_frame
-	var rutas := _generar(_nuevo_destino(), false)
-	if rutas.is_empty():
+	var ruta := _generar(_nuevo_destino())
+	if ruta == "":
 		aviso.text = "Falló la generación del nivel (ver la terminal)."
 		return
-	_cargar(rutas[0])
+	_cargar(ruta)
 	_preparar_siguiente()
 
 
+# Carga la serie guardada: etapa_0, etapa_1... hasta la primera que falte.
 func _empezar_evolucion() -> void:
-	modo = "evolucion"
-	aviso.text = "Evolucionando niveles desde ruido con el GA (unos segundos)..."
-	await get_tree().process_frame
-	etapas = _generar(_nuevo_destino(), true)
+	etapas = PackedStringArray()
+	while FileAccess.file_exists(dir_evolucion.path_join("etapa_%d/nivel.json" % etapas.size())):
+		etapas.append(dir_evolucion.path_join("etapa_%d/nivel.json" % etapas.size()))
 	if etapas.is_empty():
-		aviso.text = "Falló la generación de la evolución (ver la terminal)."
+		aviso.text = "No hay ninguna evolución guardada en %s.
+" % dir_evolucion \
+			+ "Créala con: cargo run --release -- generar --evolucion\n\nEsc salir"
 		return
+	modo = "evolucion"
 	etapa = 0
 	_cargar(etapas[0])
 
@@ -160,6 +167,7 @@ func _configurar_controles() -> void:
 		"saltar": [KEY_SPACE, KEY_Z, KEY_UP, KEY_W],
 		"reiniciar": [KEY_R],
 		"siguiente": [KEY_N, KEY_ENTER],
+		"anterior": [KEY_B, KEY_BACKSPACE],
 		"marcar": [KEY_F],
 		"depurar": [KEY_F3, KEY_TAB],
 		"salir": [KEY_ESCAPE],
@@ -198,6 +206,11 @@ func _crear_nodos() -> void:
 	hud.add_theme_font_size_override("font_size", 18)
 	hud.add_theme_color_override("font_outline_color", Color.BLACK)
 	hud.add_theme_constant_override("outline_size", 6)
+	# Panel oscuro detrás del texto para leerlo también sobre niveles cargados.
+	var panel := StyleBoxFlat.new()
+	panel.bg_color = Color(0, 0, 0, 0.5)
+	panel.set_content_margin_all(6)
+	hud.add_theme_stylebox_override("normal", panel)
 	capa_hud.add_child(hud)
 	aviso = Label.new()
 	aviso.position = Vector2(12, 300)
@@ -214,24 +227,17 @@ func _nuevo_destino() -> String:
 	return dir_juego.path_join("nivel_%d_%d" % [Time.get_unix_time_from_system(), contador_generados])
 
 
-# Ejecuta `nivelga generar` y devuelve las rutas de los niveles creados (una en
-# el modo infinito y una por etapa en el de evolución); vacío si falla.
-func _generar(destino: String, evolucion: bool) -> PackedStringArray:
+# Ejecuta `nivelga generar` y devuelve la ruta del nivel creado; vacía si falla.
+func _generar(destino: String) -> String:
 	var args := ["generar", "--salida", destino, "--recursos", raiz.path_join("assets")]
-	if evolucion:
-		args.append("--evolucion")
 	var modelo := raiz.path_join("modelos/naturalidad.nng")
 	if FileAccess.file_exists(modelo):
 		args.append_array(["--naturalidad", modelo])
 	var salida := []
 	if OS.execute(binario, args, salida, true) != 0:
 		printerr("nivelga generar falló: ", salida)
-		return PackedStringArray()
-	var rutas := PackedStringArray()
-	for linea in str(salida[0]).split("\n", false):
-		if linea.ends_with("nivel.json"):
-			rutas.append(linea.strip_edges())
-	return rutas
+		return ""
+	return str(salida[0]).strip_edges()
 
 
 func _preparar_siguiente() -> void:
@@ -244,8 +250,7 @@ func _preparar_siguiente() -> void:
 
 
 func _generar_en_hilo(destino: String) -> String:
-	var rutas := _generar(destino, false)
-	return rutas[0] if not rutas.is_empty() else ""
+	return _generar(destino)
 
 
 func _siguiente_listo() -> bool:
@@ -279,11 +284,20 @@ func _cargar(ruta: String) -> void:
 		aviso.text = "No se pudo leer %s" % ruta
 		return
 	nivel = datos
+	# Las series guardadas usan rutas relativas: el fondo a la carpeta del nivel
+	# y las hojas de sprites a la raíz del proyecto.
+	if nivel["fondo"].is_relative_path():
+		nivel["fondo"] = ruta.get_base_dir().path_join(nivel["fondo"])
+	for lista in nivel["sprites"].values():
+		for s in lista:
+			if s["hoja"].is_relative_path():
+				s["hoja"] = raiz.path_join(s["hoja"])
 	filas = PackedStringArray(nivel["filas"])
 	alto = filas.size()
 	ancho = filas[0].length()
 	numero_nivel += 1
 	sprite_jugador.visible = true
+	hud.visible = true
 	capa_depuracion.visible = depuracion
 	for hijo in capa_nivel.get_children():
 		hijo.queue_free()
@@ -577,14 +591,23 @@ func _actualizar_vista() -> void:
 	camara.position = Vector2(px + get_viewport_rect().size.x / zoom * 0.15, alto * T / 2.0)
 	var m: Dictionary = nivel["metricas"]
 	var total_monedas := int(m["monedas"])
-	var cabecera := "Nivel %d" % numero_nivel
+	var cabecera := "Nivel %d · " % numero_nivel
+	var teclas := "N siguiente"
 	if nivel.has("etapa"):
-		cabecera = "Evolución %d/%d: %s · aptitud %.3f" % [etapa + 1, etapas.size(), nivel["etapa"], m["aptitud"]]
-	hud.text = "%s · %s · %d columnas · dificultad medida %.2f\n" % [
+		var e: Dictionary = nivel["etapa"]
+		cabecera = "EVOLUCIÓN, etapa %d de %d: %s\n" % [e["numero"], e["total"], e["titulo"]] \
+			+ "Este nivel: aptitud %.3f · %s · calidad %.2f · dificultad %.2f · variedad %.2f · coherencia %.2f\n" % [
+				m["aptitud"], "jugable" if m["jugable"] else "NO jugable", m["calidad"],
+				m["dificultad"], m["variedad"], m["coherencia"]
+			] + "Población en la generación %d: aptitud media %.3f · %.0f%% jugables · diversidad %.3f\n" % [
+				e["generacion"], e["media"], 100.0 * e["jugables"], e["diversidad"]
+			]
+		teclas = "N siguiente etapa · B anterior"
+	hud.text = "%s%s · %d columnas · dificultad medida %.2f\n" % [
 		cabecera, nivel["estilo"], ancho, m["dificultad"]
 	] + "Muertes %d · monedas %d/%d · %.1f s%s\n" % [
 		muertes, total_monedas - monedas.size(), total_monedas, ticks / 60.0, " · MARCADO" if marcado else ""
-	] + "←→ moverse · espacio saltar · ↑↓ escaleras · R reiniciar · N siguiente · F marcar · F3 depurar · M menú · Esc salir"
+	] + "←→ moverse · espacio saltar · ↑↓ escaleras · R reiniciar · %s · F marcar · F3 depurar · M menú · Esc salir" % teclas
 	if depuracion:
 		hud.text += "\nDepuración: blanco suelo · cian plataforma de un sentido · amarillo escalera\n" \
 			+ "rojo mata · naranja patrulla de enemigo · dorado moneda · verde meta · gris decoración · azul jugador"
@@ -618,6 +641,9 @@ func _unhandled_input(ev: InputEvent) -> void:
 		capa_depuracion.visible = depuracion
 	elif ev.is_action_pressed("siguiente"):
 		_pasar_al_siguiente()
+	elif ev.is_action_pressed("anterior") and modo == "evolucion" and etapa > 0:
+		etapa -= 1
+		_cargar(etapas[etapa])
 
 
 func _pasar_al_siguiente() -> void:

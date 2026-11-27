@@ -1,6 +1,7 @@
 //! Imágenes RGBA en memoria, composición y E/S en PNG hecha a mano.
 
 pub mod checksum;
+mod deflate;
 pub mod inflate;
 pub mod png;
 

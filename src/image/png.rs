@@ -2,12 +2,13 @@
 //!
 //! El decodificador soporta todos los tipos de color sin entrelazado, con
 //! profundidades de 1 a 8 (y 16, reducida a 8 bits), paleta (`PLTE`) y
-//! transparencia (`tRNS`). El codificador escribe RGBA8 con bloques DEFLATE
-//! almacenados: archivos más grandes, pero triviales de verificar.
+//! transparencia (`tRNS`). El codificador escribe RGBA8 comprimido con el
+//! compresor DEFLATE propio ([`super::deflate`]).
 
 use super::Image;
 use super::checksum::Crc32;
-use super::inflate::{zlib_decompress, zlib_store};
+use super::deflate::zlib_compress;
+use super::inflate::zlib_decompress;
 use crate::error::{Error, Result};
 use std::path::Path;
 
@@ -330,7 +331,7 @@ pub fn encode(img: &Image) -> Vec<u8> {
             raw.extend_from_slice(px);
         }
     }
-    let z = zlib_store(&raw);
+    let z = zlib_compress(&raw);
     let mut out = Vec::with_capacity(z.len() + 64);
     out.extend_from_slice(&SIGNATURE);
     let mut ihdr = [0_u8; 13];

@@ -10,21 +10,21 @@ use crate::error::{Error, Result};
 const MAX_BITS: usize = 15;
 
 /// Longitud base de los símbolos 257..=285.
-const LEN_BASE: [u16; 29] = [
+pub(super) const LEN_BASE: [u16; 29] = [
     3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131,
     163, 195, 227, 258,
 ];
 /// Bits extra de los símbolos de longitud.
-const LEN_EXTRA: [u8; 29] = [
+pub(super) const LEN_EXTRA: [u8; 29] = [
     0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0,
 ];
 /// Distancia base de los códigos 0..=29.
-const DIST_BASE: [u16; 30] = [
+pub(super) const DIST_BASE: [u16; 30] = [
     1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537,
     2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
 ];
 /// Bits extra de las distancias.
-const DIST_EXTRA: [u8; 30] = [
+pub(super) const DIST_EXTRA: [u8; 30] = [
     0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13,
     13,
 ];
@@ -323,41 +323,9 @@ pub fn zlib_decompress(data: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Envuelve datos en un flujo zlib con bloques DEFLATE almacenados (sin comprimir).
-pub fn zlib_store(data: &[u8]) -> Vec<u8> {
-    const MAX_BLOCK: usize = 65_535;
-    let blocks = data.len().div_ceil(MAX_BLOCK).max(1);
-    let mut out = Vec::with_capacity(data.len() + blocks * 5 + 6);
-    out.extend_from_slice(&[0x78, 0x01]);
-    let mut chunks = data.chunks(MAX_BLOCK).peekable();
-    if chunks.peek().is_none() {
-        out.extend_from_slice(&[1, 0, 0, 0xFF, 0xFF]);
-    }
-    while let Some(chunk) = chunks.next() {
-        let last = u8::from(chunks.peek().is_none());
-        let len = chunk.len() as u16;
-        out.push(last);
-        out.extend_from_slice(&len.to_le_bytes());
-        out.extend_from_slice(&(!len).to_le_bytes());
-        out.extend_from_slice(chunk);
-    }
-    out.extend_from_slice(&adler32(data).to_be_bytes());
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn ida_y_vuelta_almacenado() {
-        let data: Vec<u8> = (0..200_000_u32).map(|i| (i * 7 % 251) as u8).collect();
-        assert_eq!(zlib_decompress(&zlib_store(&data)).expect("válido"), data);
-        assert_eq!(
-            zlib_decompress(&zlib_store(&[])).expect("válido"),
-            Vec::<u8>::new()
-        );
-    }
 
     #[test]
     fn huffman_fijo_de_zlib() {

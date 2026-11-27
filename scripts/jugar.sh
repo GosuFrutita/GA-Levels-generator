@@ -1,6 +1,6 @@
 #!/bin/sh
 # Lanza el juego en Godot para probar los niveles generados por nivelga.
-# Uso: sh scripts/jugar.sh                     (niveles nuevos sin fin)
+# Uso: sh scripts/jugar.sh                     (menú: modo infinito o evolución)
 #      sh scripts/jugar.sh --nivel=RUTA.json   (un nivel concreto)
 # El ejecutable de Godot se busca en la variable GODOT, en el PATH o en la
 # carpeta de la versión anterior del proyecto.

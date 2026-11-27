@@ -623,9 +623,13 @@ fn level_json(
     assets: &std::path::Path,
     background: &str,
     (seed, target, seconds): (u64, f64, f64),
+    relative: bool,
 ) -> nivelga::json::Json {
     use nivelga::json::Json;
-    let abs = |p: &std::path::Path| {
+    let sheet = |p: &std::path::Path| {
+        if relative {
+            return p.display().to_string();
+        }
         std::fs::canonicalize(p)
             .map_or_else(|_| p.display().to_string(), |a| a.display().to_string())
     };
@@ -668,7 +672,7 @@ fn level_json(
             .iter()
             .map(|r| {
                 Json::obj()
-                    .with("hoja", abs(&assets.join(r.file)))
+                    .with("hoja", sheet(&assets.join(r.file)))
                     .with("indice", u32::from(r.index))
                     .with("columnas", r.columns)
                     .with("tam", r.size)
@@ -720,10 +724,14 @@ fn generar(mut args: Args) -> Result<()> {
     let (generations, population) = if evolution { (400, 100) } else { (80, 60) };
     let generations = args.get("generaciones", generations)?;
     let population = args.get("poblacion", population)?;
-    let out = PathBuf::from(
-        args.take("salida")
-            .unwrap_or_else(|| "resultados/juego/actual".into()),
-    );
+    // La serie de la evolución se guarda junto al juego, que solo la carga.
+    let out = PathBuf::from(args.take("salida").unwrap_or_else(|| {
+        if evolution {
+            "godot/evolucion".into()
+        } else {
+            "resultados/juego/actual".into()
+        }
+    }));
     let assets = PathBuf::from(args.take("recursos").unwrap_or_else(|| "assets".into()));
     let ext = Externals::load(&mut args)?;
     args.finish()?;
@@ -745,11 +753,12 @@ fn generar(mut args: Args) -> Result<()> {
         cfg.fitness.weights.naturalness = 0.15;
     }
     // Generaciones de las que se guarda el mejor en el modo evolución: la
-    // inicial y 1/16, 1/8, 1/4, 1/2 y el total (0, 25, 50, 100, 200 y 400).
+    // inicial y 1/80, 1/40, 1/16, 1/8, 1/4, 1/2 y el total (0, 5, 10, 25, 50,
+    // 100, 200 y 400).
     let marks: Vec<usize> = std::iter::once(0)
-        .chain([16, 8, 4, 2, 1].map(|d| generations / d))
+        .chain([80, 40, 16, 8, 4, 2, 1].map(|d| generations / d))
         .collect();
-    let mut snapshots: Vec<(String, Level, nivelga::fitness::Evaluation)> = Vec::new();
+    let mut snapshots: Vec<Snapshot> = Vec::new();
     let mut observe = |st: &ga::GenStats, pop: &[Level], evals: &[nivelga::fitness::Evaluation]| {
         if !evolution || !marks.contains(&st.generation) {
             return;
@@ -762,15 +771,20 @@ fn generar(mut args: Args) -> Result<()> {
             // Material de partida: un individuo típico (aptitud mediana) de
             // la población de ruido.
             let k = order[order.len() / 2];
-            snapshots.push((
-                "población inicial de ruido, individuo típico".into(),
-                pop[k].clone(),
-                evals[k].clone(),
-            ));
+            snapshots.push(Snapshot {
+                title: "población inicial de ruido, un individuo típico".into(),
+                stats: st.clone(),
+                level: pop[k].clone(),
+                eval: evals[k].clone(),
+            });
         }
         let k = order[order.len() - 1];
-        let label = format!("generación {} de {generations}, el mejor", st.generation);
-        snapshots.push((label, pop[k].clone(), evals[k].clone()));
+        snapshots.push(Snapshot {
+            title: format!("generación {} de {generations}, el mejor", st.generation),
+            stats: st.clone(),
+            level: pop[k].clone(),
+            eval: evals[k].clone(),
+        });
     };
     let mut result = ga::run(&cfg, &checker, ext.extras(), &mut observe);
     // Si por mala suerte el mejor no es jugable, se reintenta con otra semilla.
@@ -783,19 +797,7 @@ fn generar(mut args: Args) -> Result<()> {
     }
     let meta = (seed, target, t0.elapsed().as_secs_f64());
     if evolution {
-        // Una carpeta por etapa, en orden; los niveles se muestran tal como los
-        // dejó el GA (sin quitar monedas trampa) para ver su evolución real.
-        for (k, (label, level, eval)) in snapshots.iter().enumerate() {
-            let doc = write_game_level(
-                level,
-                eval,
-                &out.join(format!("etapa_{k}")),
-                &assets,
-                meta,
-                Some(label),
-            )?;
-            println!("{doc}");
-        }
+        write_evolution(&snapshots, &out, &assets, meta)?;
     } else {
         let mut best = result.best.clone();
         checker.remove_trapped_coins(&mut best);
@@ -807,15 +809,73 @@ fn generar(mut args: Args) -> Result<()> {
     Ok(())
 }
 
+/// Escribe la serie de la evolución: una carpeta `etapa_k` por instantánea,
+/// en orden, con los datos de su generación para el marcador del juego.
+fn write_evolution(
+    snapshots: &[Snapshot],
+    out: &std::path::Path,
+    assets: &std::path::Path,
+    meta: (u64, f64, f64),
+) -> Result<()> {
+    // Las etapas de una serie anterior se borran para no mezclarlas.
+    if out.is_dir() {
+        for entry in std::fs::read_dir(out)? {
+            let path = entry?.path();
+            if path.is_dir()
+                && path
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("etapa_"))
+            {
+                std::fs::remove_dir_all(path)?;
+            }
+        }
+    }
+    // Una carpeta por etapa, en orden; los niveles se muestran tal como los
+    // dejó el GA (sin quitar monedas trampa) para ver su evolución real.
+    let total = snapshots.len();
+    for (k, snap) in snapshots.iter().enumerate() {
+        let stage = nivelga::json::Json::obj()
+            .with("numero", k + 1)
+            .with("total", total)
+            .with("titulo", snap.title.as_str())
+            .with("generacion", snap.stats.generation)
+            .with("media", snap.stats.mean)
+            .with("jugables", snap.stats.feasible)
+            .with("diversidad", snap.stats.diversity);
+        let doc = write_game_level(
+            &snap.level,
+            &snap.eval,
+            &out.join(format!("etapa_{k}")),
+            assets,
+            meta,
+            Some(stage),
+        )?;
+        println!("{doc}");
+    }
+    Ok(())
+}
+
+/// Un nivel guardado de la serie de la evolución con las estadísticas de su
+/// generación.
+struct Snapshot {
+    title: String,
+    stats: ga::GenStats,
+    level: Level,
+    eval: nivelga::fitness::Evaluation,
+}
+
 /// Escribe `nivel.txt`, `fondo.png` y `nivel.json` de un nivel para el juego y
-/// devuelve la ruta absoluta del JSON. `stage` describe la etapa de evolución.
+/// devuelve la ruta absoluta del JSON. `stage` describe la etapa de evolución;
+/// en ese caso las rutas del JSON son relativas (el fondo a la carpeta del
+/// nivel y las hojas de sprites a la raíz del proyecto) para que la serie
+/// guardada funcione en cualquier copia del repositorio.
 fn write_game_level(
     level: &Level,
     eval: &nivelga::fitness::Evaluation,
     out: &std::path::Path,
     assets: &std::path::Path,
     meta: (u64, f64, f64),
-    stage: Option<&str>,
+    stage: Option<nivelga::json::Json>,
 ) -> Result<String> {
     let abs = |p: &std::path::Path| {
         std::fs::canonicalize(p)
@@ -826,10 +886,10 @@ fn write_game_level(
     let sets = Tilesets::load(assets)?;
     nivelga::image::png::save(&nivelga::render::render_static(level, &sets), &bg_path)?;
     std::fs::write(out.join("nivel.txt"), level.to_string())?;
-    let mut doc = level_json(level, eval, assets, &abs(&bg_path), meta);
-    if let Some(s) = stage {
-        doc = doc.with("etapa", s);
-    }
+    let doc = match stage {
+        Some(s) => level_json(level, eval, assets, "fondo.png", meta, true).with("etapa", s),
+        None => level_json(level, eval, assets, &abs(&bg_path), meta, false),
+    };
     let json_path = out.join("nivel.json");
     std::fs::write(&json_path, doc.dump())?;
     Ok(abs(&json_path))
@@ -860,6 +920,7 @@ fn exportar(mut args: Args) -> Result<()> {
         &assets,
         &bg_abs,
         (0, cfg.targets.difficulty, 0.0),
+        false,
     );
     let path = out.join("nivel.json");
     std::fs::write(&path, doc.dump())?;

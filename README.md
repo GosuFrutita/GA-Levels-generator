@@ -46,17 +46,23 @@ cargo run --release -- partidas         # compara la dificultad D con tus partid
 ```
 
 Al empezar se elige el modo. El **infinito** genera un nivel nuevo y distinto
-tras otro. El de **evolución** juega una misma ejecución del GA etapa a etapa:
-la población inicial es ruido puro (cada celda es un tile al azar) y se juega
-un individuo típico de ella y después el mejor de las generaciones 0, 25, 50,
-100, 200 y 400, con su aptitud en pantalla. Las primeras etapas suelen ser
-injugables (N pasa a la siguiente) y la última es un nivel diseñado. Los
-niveles se muestran tal como los dejó el GA. Por debajo usa
-`nivelga generar --evolucion`, que escribe una carpeta por etapa.
+tras otro mientras juegas. El de **evolución** no ejecuta nada: carga las
+etapas guardadas en `godot/evolucion/` de una misma ejecución del GA que parte
+de ruido puro (cada celda es un tile al azar). Son nueve niveles: un individuo
+típico de la población inicial y el mejor de las generaciones 0, 5, 10, 25, 50,
+100, 200 y 400. El marcador muestra la aptitud y los objetivos de cada nivel y
+la aptitud media, el porcentaje de jugables y la diversidad de su población.
+Las primeras etapas suelen ser injugables y la última es un nivel diseñado. N
+pasa a la siguiente etapa y B vuelve a la anterior. La serie se puede rehacer
+con otra semilla:
+
+```sh
+cargo run --release -- generar --evolucion --semilla 11 --naturalidad modelos/naturalidad.nng
+```
 
 Controles: flechas o A/D para moverse, espacio, Z o flecha arriba para saltar,
 flechas arriba y abajo en las escaleras, R reinicia, N o Enter pasa al
-siguiente nivel, F marca el nivel para revisarlo (se copia en
+siguiente nivel, B o Retroceso vuelve a la etapa anterior en el modo evolución, F marca el nivel para revisarlo (se copia en
 `resultados/marcados/`), F3 o Tab activa el modo depuración, M vuelve al menú y Esc sale. Con la
 flecha abajo se baja de una plataforma de un solo sentido.
 
