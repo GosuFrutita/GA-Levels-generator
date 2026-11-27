@@ -479,13 +479,17 @@ pub fn style_fit(f: &Features, style: Style) -> f64 {
 
 /// Coherencia `C ∈ [0, 1]`: reglas locales + monedas alcanzables + encaje de estilo.
 pub fn coherence(f: &Features, style: Style) -> f64 {
-    let f_rules = 1.0 - (f64::from(f.violations) / (f.width as f64 / 4.0)).min(1.0);
+    // Penalización suave que nunca se satura: con un tope (la versión anterior
+    // valía 0 desde W/4 violaciones) un nivel de puro ruido dejaba de empeorar
+    // y se convertía en una meseta que atrapaba al (1+1)-EA y al cruce uniforme.
+    let k = f.width as f64 / 8.0;
+    let f_rules = 1.0 / (1.0 + (f64::from(f.violations) / k).powi(2));
     let f_coins = if f.coins == 0 {
         1.0
     } else {
         1.0 - f64::from(f.unreachable_coins) / f64::from(f.coins)
     };
-    0.45 * f_rules + 0.20 * f_coins + 0.35 * style_fit(f, style)
+    0.60 * f_rules + 0.15 * f_coins + 0.25 * style_fit(f, style)
 }
 
 #[cfg(test)]
@@ -530,6 +534,22 @@ mod tests {
         let f = feats(&l);
         assert_eq!((f.gaps, f.gap_max), (1, 3));
         assert_eq!(f.violations, 2);
+    }
+
+    #[test]
+    fn el_ruido_puntua_peor_que_un_nivel_ordenado() {
+        let mut rng = crate::rng::Rng::seed_from_u64(1);
+        let ordenado = flat(120);
+        let mut ruido = crate::ga::init::uniform_level(120, &mut rng);
+        crate::ga::init::repair(&mut ruido, false);
+        let (fo, fr) = (feats(&ordenado), feats(&ruido));
+        assert!(coherence(&fo, Style::Base) > coherence(&fr, Style::Base) + 0.3);
+        // Más violaciones siempre restan (sin meseta).
+        let mut a = fo.clone();
+        a.violations = 100;
+        let mut b = fo.clone();
+        b.violations = 200;
+        assert!(coherence(&a, Style::Base) > coherence(&b, Style::Base));
     }
 
     #[test]
