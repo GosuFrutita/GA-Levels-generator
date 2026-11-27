@@ -135,11 +135,13 @@ pub enum MacroOp {
     CopyBlock,
     /// Fila de monedas sobre una superficie.
     Coins,
+    /// Decoración sobre una superficie.
+    Decor,
 }
 
 impl MacroOp {
     /// Todos los operadores macro.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Gap,
         Self::Shift,
         Self::Platform,
@@ -147,11 +149,25 @@ impl MacroOp {
         Self::Ladder,
         Self::CopyBlock,
         Self::Coins,
+        Self::Decor,
     ];
 }
 
+/// Tiles que puede escribir la mutación puntual. Las escaleras y la decoración
+/// solo las colocan las mutaciones macro, que las construyen bien formadas: si
+/// la mutación puntual las sembraba al azar aparecían escaleras sueltas de un
+/// tile y decoración flotante por todo el nivel.
+pub const POINT_TILES: [Tile; 6] = [
+    Tile::Empty,
+    Tile::Ground,
+    Tile::Platform,
+    Tile::Hazard,
+    Tile::Enemy,
+    Tile::Coin,
+];
+
 /// Mutación puntual: cada celda de la región evolutiva cambia con probabilidad
-/// `p` a un tile evolucionable distinto. Usa saltos geométricos para no tirar
+/// `p` a otro tile de [`POINT_TILES`]. Usa saltos geométricos para no tirar
 /// un número aleatorio por celda cuando `p` es pequeño.
 pub fn point_mutation(level: &mut Level, p: f64, rng: &mut Rng) -> usize {
     if p <= 0.0 {
@@ -170,9 +186,9 @@ pub fn point_mutation(level: &mut Level, p: f64, rng: &mut Rng) -> usize {
             return n;
         }
         let old = level.tiles()[i];
-        let mut t = Tile::EVOLVABLE[rng.index(Tile::EVOLVABLE.len() - 1)];
+        let mut t = POINT_TILES[rng.index(POINT_TILES.len() - 1)];
         if t == old {
-            t = Tile::EVOLVABLE[Tile::EVOLVABLE.len() - 1];
+            t = POINT_TILES[POINT_TILES.len() - 1];
         }
         level.tiles_mut()[i] = t;
         n += 1;
@@ -244,6 +260,11 @@ pub fn macro_mutation(level: &mut Level, op: MacroOp, rng: &mut Rng) {
             let len = len.min(hi - src).min(hi - dst);
             let tiles = level.tiles_mut();
             tiles.copy_within(src * HEIGHT..(src + len) * HEIGHT, dst * HEIGHT);
+        }
+        MacroOp::Decor => {
+            if let Some(y) = surface(level, x) {
+                level.set(x, y, Tile::Decor);
+            }
         }
         MacroOp::Coins => {
             if let Some(y) = surface(level, x) {

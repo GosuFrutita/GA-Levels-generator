@@ -26,6 +26,8 @@ USO:
                                       evoluciona un nivel nuevo para el juego (JSON + PNG)
   nivelga exportar <nivel.txt> [--salida DIR]
                                       convierte un nivel en texto al formato del juego
+  nivelga corpus [--datos data/vglc/smb]
+                                      rasgos de niveles humanos (calibración)
   nivelga partidas [resultados/partidas.csv]
                                       compara la dificultad D con las partidas jugadas
   nivelga experimento <e1..e10|todos> [--repeticiones 30] [--salida DIR]
@@ -877,6 +879,63 @@ fn partidas(args: &Args) -> Result<()> {
     Ok(())
 }
 
+/// Mide los rasgos estructurales de un corpus de niveles diseñados por
+/// personas (VGLC) para calibrar los objetivos de la aptitud.
+fn corpus(mut args: Args) -> Result<()> {
+    use nivelga::metrics::{Features, MetricScratch};
+    let data = args.take("datos").unwrap_or_else(|| "data/vglc/smb".into());
+    args.finish()?;
+    let levels = nivelga::vglc::load_dir(&data)?;
+    let mut ms = MetricScratch::default();
+    let sc = PlayScratch::default();
+    let play = nivelga::play::PlayResult::default();
+    let mut rows: Vec<[f64; 9]> = Vec::new();
+    println!(
+        "nivel | ancho | patrones 3×3 | entropía | plataformas/col | monedas/col | enemigos/col | huecos/col | densidad | linealidad"
+    );
+    for (name, l) in &levels {
+        let f = Features::compute(l, &play, &sc, &mut ms);
+        let w = l.width() as f64;
+        let r = [
+            w,
+            f.pattern_ratio,
+            f.entropy,
+            f64::from(f.platforms) / w,
+            f64::from(f.coins) / w,
+            f64::from(f.enemies) / w,
+            f64::from(f.gaps) / w,
+            f.density,
+            f.linearity,
+        ];
+        println!(
+            "{name} | {:.0} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3} | {:.3}",
+            r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8]
+        );
+        rows.push(r);
+    }
+    let names = [
+        "ancho",
+        "patrones",
+        "entropía",
+        "plataformas/col",
+        "monedas/col",
+        "enemigos/col",
+        "huecos/col",
+        "densidad",
+        "linealidad",
+    ];
+    println!();
+    for (k, n) in names.iter().enumerate() {
+        let v: Vec<f64> = rows.iter().map(|r| r[k]).collect();
+        let s = nivelga::stats::summary(&v);
+        println!(
+            "{n:16} mediana {:.3}  [Q1 {:.3}; Q3 {:.3}]  rango [{:.3}; {:.3}]",
+            s.median, s.q1, s.q3, s.min, s.max
+        );
+    }
+    Ok(())
+}
+
 fn jugar(mut args: Args) -> Result<()> {
     let level = load_level(&args)?;
     let path = args
@@ -1060,6 +1119,7 @@ fn main() -> Result<()> {
         "generar" => generar(args),
         "exportar" => exportar(args),
         "partidas" => partidas(&args),
+        "corpus" => corpus(args),
         "experimentos" => {
             for (n, d) in nivelga::experiment::EXPERIMENTS {
                 println!("{n:4}  {d}");

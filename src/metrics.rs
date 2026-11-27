@@ -59,6 +59,12 @@ pub struct Features {
     pub violations: u32,
     /// Monedas no alcanzables.
     pub unreachable_coins: u32,
+    /// Fracción de plataformas y escaleras que el jugador nunca puede tocar.
+    pub unreachable_structure: f64,
+    /// Celdas de plataforma alcanzables.
+    pub reachable_platforms: u32,
+    /// Celdas de escalera alcanzables.
+    pub reachable_ladders: u32,
 }
 
 /// Memoria de trabajo reutilizable de las métricas.
@@ -234,6 +240,24 @@ fn segment_variety(level: &Level, segs: &mut Vec<[f64; 6]>) -> f64 {
     ((sum / pairs) / 0.25 - 0.1 * identical).clamp(0.0, 1.0)
 }
 
+/// Defectos de un tramo de escalera, evaluados en su celda superior: tramo de
+/// un solo tile o escalera sin salida (arriba no se puede estar de pie ni a los
+/// lados ni encima). Cuenta una vez por tramo.
+fn ladder_flaw(level: &Level, x: i32, y: i32) -> bool {
+    if level.get_or_empty(x, y - 1) == Tile::Ladder {
+        return false; // no es la celda superior del tramo
+    }
+    let short = level.get_or_empty(x, y + 1) != Tile::Ladder;
+    let stand = |cx: i32, cy: i32| {
+        cy >= 0
+            && level.get_or_empty(cx, cy).is_passable()
+            && level.get_or_empty(cx, cy + 1).is_support()
+    };
+    // Desde lo alto se sale a un lado, o hacia arriba si encima hay hueco y apoyo cerca.
+    let exit = stand(x - 1, y) || stand(x + 1, y) || stand(x - 1, y - 1) || stand(x + 1, y - 1);
+    short || !exit
+}
+
 /// Cuenta violaciones locales de coherencia visual/lógica.
 fn violations(level: &Level) -> u32 {
     let mut v = 0;
@@ -248,13 +272,17 @@ fn violations(level: &Level) -> u32 {
                 Tile::Hazard | Tile::Enemy | Tile::Decor => !solid_below,
                 // El suelo es terreno: debe llegar hasta el fondo (sin "islas de tierra").
                 Tile::Ground => !(below == Tile::Ground || y + 1 == HEIGHT as i32),
-                // Plataforma de un solo tile sin vecinas: ruido visual.
+                // Plataforma de un solo tile sin vecinas (ruido visual) o
+                // bloque flotante grueso (plataforma sobre plataforma).
                 Tile::Platform => {
-                    level.get_or_empty(x - 1, y) != Tile::Platform
-                        && level.get_or_empty(x + 1, y) != Tile::Platform
+                    (level.get_or_empty(x - 1, y) != Tile::Platform
+                        && level.get_or_empty(x + 1, y) != Tile::Platform)
+                        || below == Tile::Platform
                 }
                 // La escalera debe tocar apoyo por abajo (otra escalera o sólido).
-                Tile::Ladder => !(below.is_solid() || below == Tile::Ladder),
+                Tile::Ladder => {
+                    !(below.is_solid() || below == Tile::Ladder) || ladder_flaw(level, x, y)
+                }
                 // Moneda "perdida en el cielo": sin apoyo a 3 celdas o menos debajo.
                 Tile::Coin => !(1..=3).any(|d| level.get_or_empty(x, y + d).is_support()),
                 _ => false,
@@ -264,6 +292,39 @@ fn violations(level: &Level) -> u32 {
         }
     }
     v
+}
+
+/// Fracción de celdas de plataforma o escalera que el jugador no puede tocar:
+/// una plataforma cuenta como alcanzable si alguna celda vecina (3×3) es
+/// atravesable por el jugador; una escalera, si se atraviesa ella misma.
+fn unreachable_structure(level: &Level, reach: &PlayScratch) -> (f64, u32, u32) {
+    let (mut total, mut dead, mut plat, mut lad) = (0_u32, 0_u32, 0_u32, 0_u32);
+    for x in 0..level.width() as i32 {
+        for y in 0..HEIGHT as i32 {
+            let reachable = match level.get_or_empty(x, y) {
+                Tile::Platform => (-1..=1).any(|dx| {
+                    (-1..=1).any(|dy| (dx, dy) != (0, 0) && reach.touched(x + dx, y + dy))
+                }),
+                Tile::Ladder => reach.touched(x, y),
+                _ => continue,
+            };
+            total += 1;
+            dead += u32::from(!reachable);
+            if reachable {
+                if level.get_or_empty(x, y) == Tile::Platform {
+                    plat += 1;
+                } else {
+                    lad += 1;
+                }
+            }
+        }
+    }
+    let frac = if total == 0 {
+        0.0
+    } else {
+        f64::from(dead) / f64::from(total)
+    };
+    (frac, plat, lad)
 }
 
 impl Features {
@@ -319,6 +380,7 @@ impl Features {
                 .min(1.0)
         };
         let harm = f64::from(gaps + enemies + hazards);
+        let structure = unreachable_structure(level, reach);
         Self {
             width,
             enemies,
@@ -347,6 +409,9 @@ impl Features {
             segment_variety: segment_variety(level, &mut scratch.segments),
             violations: violations(level),
             unreachable_coins: counts[Tile::Coin as usize].saturating_sub(play.reachable_coins),
+            unreachable_structure: structure.0,
+            reachable_platforms: structure.1,
+            reachable_ladders: structure.2,
         }
     }
 
@@ -391,8 +456,12 @@ impl Default for Targets {
         Self {
             difficulty: 0.5,
             difficulty_sigma: 0.15,
-            pattern_ratio: 0.35,
-            entropy: 0.6,
+            // Calibrados con los 15 niveles de Super Mario Bros del VGLC
+            // (`nivelga corpus`): patrones 3×3 distintos con mediana 0,056 en
+            // niveles de unas 187 columnas (algo más en niveles más cortos como
+            // los nuestros) y entropía de tipos con mediana 0,39.
+            pattern_ratio: 0.08,
+            entropy: 0.42,
         }
     }
 }
@@ -422,52 +491,59 @@ pub fn difficulty(f: &Features, max_jump: f64) -> f64 {
 
 /// Variedad `V ∈ [0, 1]`.
 pub fn variety(f: &Features, t: &Targets) -> f64 {
-    let f_pat = bell(f.pattern_ratio, t.pattern_ratio, 0.1);
-    let f_ent = bell(f.entropy, t.entropy, 0.15);
+    let f_pat = bell(f.pattern_ratio, t.pattern_ratio, 0.04);
+    let f_ent = bell(f.entropy, t.entropy, 0.12);
     0.4 * f_pat + 0.3 * f_ent + 0.3 * f.segment_variety
 }
 
 /// Encaje de la estructura con la "personalidad" del pack de Kenney elegido,
 /// `[0, 1]`. Cada estilo declara rangos preferidos de densidad por columna.
 pub fn style_fit(f: &Features, style: Style) -> f64 {
-    let plat = f.per_col(f.platforms);
-    let lad = f.per_col(f.ladders);
+    // Solo cuenta la estructura alcanzable: una plataforma a la que no se puede
+    // llegar no aporta a la personalidad del estilo (antes la premiaba).
+    let plat = f.per_col(f.reachable_platforms);
+    let lad = f.per_col(f.reachable_ladders);
     let haz = f.per_col(f.hazards);
     let coin = f.per_col(f.coins);
     let dec = f.per_col(f.decor);
-    // (valor, mínimo, máximo, escala de caída)
+    // (valor, mínimo, máximo, escala de caída). Rangos por columna anclados en
+    // el corpus VGLC de Super Mario Bros (`nivelga corpus`): plataformas con
+    // mediana 0,38 [0,23; 0,54], monedas 0,05 [0; 0,13] y enemigos 0,07. Las
+    // escaleras no existen en ese corpus: se mantienen escasas en todos los
+    // estilos (la versión anterior pedía hasta 0,4 por columna en industrial y
+    // llenaba los niveles de escaleras sin sentido).
     let terms: [(f64, f64, f64, f64); 5] = match style {
-        // Pradera clásica: equilibrada, algo de todo.
+        // Pradera clásica: cercana al corpus, algo de todo.
         Style::Base => [
-            (plat, 0.4, 1.0, 0.3),
-            (lad, 0.0, 0.1, 0.1),
-            (haz, 0.03, 0.08, 0.04),
-            (coin, 0.08, 0.2, 0.08),
-            (dec, 0.08, 0.2, 0.08),
+            (plat, 0.2, 0.55, 0.15),
+            (lad, 0.0, 0.02, 0.03),
+            (haz, 0.01, 0.05, 0.03),
+            (coin, 0.03, 0.12, 0.05),
+            (dec, 0.05, 0.15, 0.06),
         ],
         // Granja: terreno abierto, mucha vegetación, pocos peligros.
         Style::Farm => [
-            (plat, 0.1, 0.5, 0.3),
-            (lad, 0.0, 0.05, 0.1),
-            (haz, 0.0, 0.03, 0.04),
-            (coin, 0.06, 0.15, 0.08),
-            (dec, 0.2, 0.4, 0.1),
+            (plat, 0.05, 0.25, 0.12),
+            (lad, 0.0, 0.02, 0.03),
+            (haz, 0.0, 0.02, 0.03),
+            (coin, 0.03, 0.10, 0.05),
+            (dec, 0.15, 0.30, 0.08),
         ],
-        // Dulce: islas flotantes y muchos coleccionables.
+        // Dulce: islas flotantes y más coleccionables.
         Style::Food => [
-            (plat, 0.9, 1.8, 0.4),
-            (lad, 0.0, 0.05, 0.1),
-            (haz, 0.02, 0.06, 0.04),
-            (coin, 0.15, 0.35, 0.1),
-            (dec, 0.05, 0.15, 0.08),
+            (plat, 0.5, 1.0, 0.2),
+            (lad, 0.0, 0.02, 0.03),
+            (haz, 0.02, 0.05, 0.03),
+            (coin, 0.10, 0.20, 0.06),
+            (dec, 0.05, 0.12, 0.06),
         ],
-        // Industrial: vertical, escaleras, vigas y ácido.
+        // Industrial: más vertical, con vigas, alguna escalera y más peligros.
         Style::Industrial => [
-            (plat, 1.0, 2.0, 0.4),
-            (lad, 0.15, 0.4, 0.1),
-            (haz, 0.06, 0.12, 0.04),
-            (coin, 0.04, 0.12, 0.06),
-            (dec, 0.03, 0.12, 0.08),
+            (plat, 0.45, 0.9, 0.2),
+            (lad, 0.03, 0.08, 0.04),
+            (haz, 0.04, 0.08, 0.03),
+            (coin, 0.02, 0.08, 0.04),
+            (dec, 0.03, 0.10, 0.06),
         ],
     };
     terms
@@ -477,19 +553,22 @@ pub fn style_fit(f: &Features, style: Style) -> f64 {
         / terms.len() as f64
 }
 
-/// Coherencia `C ∈ [0, 1]`: reglas locales + monedas alcanzables + encaje de estilo.
+/// Coherencia `C ∈ [0, 1]`: reglas locales, estructura alcanzable, monedas
+/// alcanzables y encaje de estilo.
 pub fn coherence(f: &Features, style: Style) -> f64 {
-    // Penalización suave que nunca se satura: con un tope (la versión anterior
-    // valía 0 desde W/4 violaciones) un nivel de puro ruido dejaba de empeorar
-    // y se convertía en una meseta que atrapaba al (1+1)-EA y al cruce uniforme.
-    let k = f.width as f64 / 8.0;
-    let f_rules = 1.0 / (1.0 + (f64::from(f.violations) / k).powi(2));
+    // Penalización que nunca se satura y que castiga desde la primera
+    // violación. Historia: con un tope lineal (0 desde W/4 violaciones) el ruido
+    // formaba una meseta; con una forma cuadrática suave un solo defecto (una
+    // escalera que no lleva a nada) apenas costaba un 0,5 %.
+    let k = f.width as f64 / 30.0;
+    let f_rules = 1.0 / (1.0 + f64::from(f.violations) / k);
     let f_coins = if f.coins == 0 {
         1.0
     } else {
         1.0 - f64::from(f.unreachable_coins) / f64::from(f.coins)
     };
-    0.60 * f_rules + 0.15 * f_coins + 0.25 * style_fit(f, style)
+    let f_reach = 1.0 - f.unreachable_structure;
+    0.45 * f_rules + 0.25 * f_reach + 0.10 * f_coins + 0.20 * style_fit(f, style)
 }
 
 #[cfg(test)]
@@ -550,6 +629,40 @@ mod tests {
         let mut b = fo.clone();
         b.violations = 200;
         assert!(coherence(&a, Style::Base) > coherence(&b, Style::Base));
+    }
+
+    #[test]
+    fn escaleras_defectuosas() {
+        let mut l = flat(30);
+        // Escalera de un solo tile junto al suelo: defecto (tramo corto).
+        l.set(5, HEIGHT - 2, Tile::Ladder);
+        assert_eq!(feats(&l).violations, 1);
+        // Escalera de 4 que sube a una plataforma: correcta.
+        let mut l = flat(30);
+        for y in HEIGHT - 5..HEIGHT - 1 {
+            l.set(10, y, Tile::Ladder);
+        }
+        l.set(11, HEIGHT - 4, Tile::Platform);
+        l.set(12, HEIGHT - 4, Tile::Platform);
+        assert_eq!(feats(&l).violations, 0);
+        // La misma escalera sin nada arriba: no lleva a ningún sitio.
+        l.set(11, HEIGHT - 4, Tile::Empty);
+        l.set(12, HEIGHT - 4, Tile::Empty);
+        assert_eq!(feats(&l).violations, 1);
+    }
+
+    #[test]
+    fn estructura_inalcanzable() {
+        let mut l = flat(30);
+        for x in 10..13 {
+            l.set(x, 1, Tile::Platform); // muy alta: inalcanzable
+        }
+        assert!(feats(&l).unreachable_structure > 0.99);
+        let mut l = flat(30);
+        for x in 10..13 {
+            l.set(x, HEIGHT - 4, Tile::Platform); // a 2 de altura: alcanzable
+        }
+        assert!(feats(&l).unreachable_structure < 1e-9);
     }
 
     #[test]

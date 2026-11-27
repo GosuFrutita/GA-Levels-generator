@@ -65,7 +65,7 @@ pub fn describe(e: &Evaluation) -> String {
     format!(
         "F={:.4} jugable={} Q={:.3} D={:.3} (f_dif={:.3}) V={:.3} C={:.3} estilo_fit={:.3} nat={:.3}\n\
          enemigos={} peligros={} huecos={} (máx {}) saltos={} (ajustados {}) monedas={} escaleras={} \
-         plataformas={} deco={} violaciones={} linealidad={:.2} leniencia={:.2} patrones={:.3} entropía={:.3}",
+         plataformas={} deco={} violaciones={} inalcanzable={:.0}% linealidad={:.2} leniencia={:.2} patrones={:.3} entropía={:.3}",
         e.fitness,
         if e.feasible { "sí" } else { "no" },
         e.quality,
@@ -86,6 +86,7 @@ pub fn describe(e: &Evaluation) -> String {
         f.platforms,
         f.decor,
         f.violations,
+        100.0 * f.unreachable_structure,
         f.linearity,
         f.leniency,
         f.pattern_ratio,

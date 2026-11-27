@@ -23,7 +23,8 @@ pub fn write_safe_zones(level: &mut Level) {
 /// Siempre: restaura las zonas fijas y elimina `Start`/`Goal` sueltos. Si
 /// `full`: convierte el suelo flotante en plataforma y deja caer enemigos,
 /// peligros y decoraciones hasta el primer apoyo sólido (o los elimina si caen
-/// a un foso). La variante sin reparación completa se compara en un experimento.
+/// a un foso) y repara las escaleras ([`repair_ladders`]). La variante sin
+/// reparación completa se compara en un experimento.
 pub fn repair(level: &mut Level, full: bool) {
     let w = level.width();
     for x in SAFE_COLS..w - SAFE_COLS {
@@ -59,7 +60,60 @@ pub fn repair(level: &mut Level, full: bool) {
             }
         }
     }
+    if full {
+        repair_ladders(level);
+    }
     write_safe_zones(level);
+}
+
+/// ¿Se puede estar de pie en `(x, y)`?
+fn can_stand(level: &Level, x: i32, y: i32) -> bool {
+    y >= 0 && level.get_or_empty(x, y).is_passable() && level.get_or_empty(x, y + 1).is_support()
+}
+
+/// Repara las escaleras: elimina los tramos que no apoyan en algo sólido,
+/// recorta por arriba la parte que no lleva a ninguna salida y elimina los
+/// tramos que quedan con menos de 2 tiles. Sin esto el GA usaba escaleras como
+/// pilares en mitad de los huecos y como relleno para sumar variedad.
+pub fn repair_ladders(level: &mut Level) {
+    let w = level.width();
+    for x in SAFE_COLS..w - SAFE_COLS {
+        let mut y = 0;
+        while y < HEIGHT {
+            if level.get(x, y) != Tile::Ladder {
+                y += 1;
+                continue;
+            }
+            let top = y;
+            while y < HEIGHT && level.get(x, y) == Tile::Ladder {
+                y += 1;
+            }
+            let bottom = y - 1;
+            let xi = x as i32;
+            let supported = y < HEIGHT && level.get(x, y).is_solid();
+            let exit = |l: &Level, t: usize| {
+                let ti = t as i32;
+                can_stand(l, xi - 1, ti)
+                    || can_stand(l, xi + 1, ti)
+                    || can_stand(l, xi - 1, ti - 1)
+                    || can_stand(l, xi + 1, ti - 1)
+            };
+            let mut new_top = top;
+            if supported {
+                while new_top <= bottom && !exit(level, new_top) {
+                    new_top += 1;
+                }
+            } else {
+                new_top = bottom + 1;
+            }
+            if bottom + 1 < new_top + 2 {
+                new_top = bottom + 1; // queda corta: se elimina entera
+            }
+            for yy in top..new_top {
+                level.set(x, yy, Tile::Empty);
+            }
+        }
+    }
 }
 
 /// Genera un nivel aleatorio "plausible" con un generador constructivo:
@@ -182,6 +236,37 @@ mod tests {
             assert_eq!(l.tiles().iter().filter(|&&t| t == Tile::Goal).count(), 1);
             assert_eq!(l.start(), Some((1, SAFE_GROUND - 1)));
         }
+    }
+
+    #[test]
+    fn reparacion_de_escaleras() {
+        let mut l = Level::empty(30, Style::Base);
+        write_safe_zones(&mut l);
+        for x in 0..30 {
+            l.set(x, HEIGHT - 1, Tile::Ground);
+        }
+        // Escalera de 6 sin nada arriba: se elimina entera.
+        for y in HEIGHT - 7..HEIGHT - 1 {
+            l.set(10, y, Tile::Ladder);
+        }
+        // Escalera de 6 con plataforma a media altura: se recorta hasta ahí.
+        for y in HEIGHT - 7..HEIGHT - 1 {
+            l.set(20, y, Tile::Ladder);
+        }
+        l.set(21, HEIGHT - 3, Tile::Platform);
+        l.set(22, HEIGHT - 3, Tile::Platform);
+        // Escalera colgando sobre un hueco: se elimina.
+        l.set(15, HEIGHT - 1, Tile::Empty);
+        l.set(15, HEIGHT - 2, Tile::Ladder);
+        l.set(15, HEIGHT - 3, Tile::Ladder);
+        repair_ladders(&mut l);
+        assert!((0..HEIGHT).all(|y| l.get(10, y) != Tile::Ladder));
+        assert!((0..HEIGHT).all(|y| l.get(15, y) != Tile::Ladder));
+        let kept: Vec<usize> = (0..HEIGHT)
+            .filter(|&y| l.get(20, y) == Tile::Ladder)
+            .collect();
+        assert_eq!(kept.first(), Some(&(HEIGHT - 4)), "{kept:?}");
+        assert!(kept.len() >= 2);
     }
 
     #[test]
