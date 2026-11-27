@@ -153,8 +153,12 @@ pub struct PlayResult {
     pub jumps: u32,
     /// Saltos "ajustados" (cerca del límite de altura o longitud).
     pub tight_jumps: u32,
-    /// Monedas alcanzables.
+    /// Monedas que se pueden recoger sin quedar atrapado (después de cogerlas
+    /// aún se puede llegar a la meta).
     pub reachable_coins: u32,
+    /// Fracción de las posiciones alcanzables desde las que ya no se puede
+    /// llegar a la meta (callejones sin salida); 0 si el nivel no tiene solución.
+    pub trapped: f64,
 }
 
 /// Memoria de trabajo reutilizable (una por hilo): evita asignar y limpiar
@@ -168,6 +172,18 @@ pub struct PlayScratch {
     prev: Vec<u32>,
     prev_move: Vec<Move>,
     buckets: Vec<Vec<u32>>,
+    /// Aristas `(origen, destino)` de la búsqueda hacia delante.
+    edges: Vec<(u32, u32)>,
+    /// Monedas tocadas: `(celda, destino)` del movimiento que las toca.
+    coin_hits: Vec<(u32, u32)>,
+    /// Estados desde los que un movimiento toca la meta (sello de época).
+    wins: Vec<u32>,
+    /// Estados desde los que se puede llegar a la meta (sello de época).
+    good: Vec<u32>,
+    /// Lista de adyacencia inversa en formato CSR y cola del recorrido.
+    rev_start: Vec<u32>,
+    rev_from: Vec<u32>,
+    queue: Vec<u32>,
 }
 
 impl PlayScratch {
@@ -190,16 +206,22 @@ impl PlayScratch {
             self.dist.resize(cells, u32::MAX);
             self.prev.resize(cells, u32::MAX);
             self.prev_move.resize(cells, Move::Walk);
+            self.wins.resize(cells, 0);
+            self.good.resize(cells, 0);
         }
         self.epoch = self.epoch.wrapping_add(1);
         if self.epoch == 0 {
             self.seen.fill(0);
             self.touched.fill(0);
+            self.wins.fill(0);
+            self.good.fill(0);
             self.epoch = 1;
         }
         for b in &mut self.buckets {
             b.clear();
         }
+        self.edges.clear();
+        self.coin_hits.clear();
     }
 }
 
@@ -347,6 +369,7 @@ impl Checker {
     /// Reconstruye la trayectoria celda a celda del camino óptimo de `res`
     /// (incluye las celdas de los arcos de salto y de las caídas).
     pub fn trajectory(&self, level: &Level, res: &PlayResult) -> Vec<(usize, usize)> {
+        let level = &level.with_patrols();
         let mut out = Vec::with_capacity(res.path.len() * 4);
         let Some(&first) = res.path.first() else {
             return out;
@@ -382,29 +405,54 @@ impl Checker {
         out
     }
 
+    /// Quita las monedas que solo se pueden recoger cayendo en un callejón sin
+    /// salida (o que no se alcanzan). No hace nada si el nivel no tiene solución.
+    pub fn remove_trapped_coins(&self, level: &mut Level) {
+        let mut sc = PlayScratch::default();
+        if !self.check(level, &mut sc).solvable {
+            return;
+        }
+        let ep = sc.epoch;
+        for x in 0..level.width() {
+            for y in 0..HEIGHT {
+                let cell = idx(x as i32, y as i32);
+                let safe = sc
+                    .coin_hits
+                    .iter()
+                    .any(|&(c, to)| c == cell && sc.good[to as usize] == ep);
+                if level.get(x, y) == Tile::Coin && !safe {
+                    level.set(x, y, Tile::Empty);
+                }
+            }
+        }
+    }
+
     /// Analiza la jugabilidad del nivel.
     pub fn check(&self, level: &Level, scratch: &mut PlayScratch) -> PlayResult {
         let (Some(start), Some(goal)) = (level.start(), level.goal()) else {
             return PlayResult::default();
         };
         scratch.reset(level.width() * HEIGHT, self.n_buckets);
+        let patrolled = level.with_patrols();
         // La salida debe tener apoyo; si no, se deja caer.
-        let Some(s0) = Self::fall(level, start.0 as i32, start.1 as i32, |_, _| {}) else {
+        let Some(s0) = Self::fall(&patrolled, start.0 as i32, start.1 as i32, |_, _| {}) else {
             return PlayResult::default();
         };
         let mut search = Search {
             checker: self,
-            level,
+            level: &patrolled,
+            coins: level,
             sc: scratch,
             goal: (goal.0 as i32, goal.1 as i32),
             current: 0,
             pending: 0,
             max_x: s0.0,
             goal_state: None,
-            coins: 0,
+            from: u32::MAX,
         };
         search.relax(s0, 0, u32::MAX, Move::Walk);
         search.run();
+        search.mark_good();
         search.finish(s0, goal)
     }
 }
@@ -413,27 +461,77 @@ impl Checker {
 /// generación de vecinos y de la reconstrucción del resultado).
 struct Search<'a> {
     checker: &'a Checker,
+    /// Nivel con las zonas de patrulla marcadas (física).
     level: &'a Level,
+    /// Nivel original (dónde están las monedas).
+    coins: &'a Level,
     sc: &'a mut PlayScratch,
     goal: (i32, i32),
     current: u32,
     pending: usize,
     max_x: i32,
     goal_state: Option<u32>,
-    coins: u32,
+    /// Estado que se está expandiendo.
+    from: u32,
 }
 
 impl Search<'_> {
-    /// Marca una celda atravesada (alcanzabilidad, monedas y meta al vuelo).
-    fn touch(&mut self, x: i32, y: i32) {
+    /// Marca una celda atravesada por el movimiento del estado en expansión
+    /// hacia `to` (alcanzabilidad, monedas y meta al vuelo).
+    fn touch(&mut self, x: i32, y: i32, to: (i32, i32)) {
         if y < 0 {
             return;
         }
-        let i = idx(x, y) as usize;
-        if self.sc.touched[i] != self.sc.epoch {
-            self.sc.touched[i] = self.sc.epoch;
-            if self.level.get(x as usize, y as usize) == Tile::Coin {
-                self.coins += 1;
+        let i = idx(x, y);
+        self.sc.touched[i as usize] = self.sc.epoch;
+        if (x, y) == self.goal {
+            self.sc.wins[self.from as usize] = self.sc.epoch;
+        }
+        if self.coins.get(x as usize, y as usize) == Tile::Coin {
+            self.sc.coin_hits.push((i, idx(to.0, to.1)));
+        }
+    }
+
+    /// Recorre hacia atrás las aristas desde los estados ganadores y marca los
+    /// estados desde los que todavía se puede llegar a la meta.
+    fn mark_good(&mut self) {
+        let sc = &mut *self.sc;
+        let ep = sc.epoch;
+        let n = sc.seen.len();
+        sc.rev_start.clear();
+        sc.rev_start.resize(n + 1, 0);
+        for &(_, to) in &sc.edges {
+            sc.rev_start[to as usize + 1] += 1;
+        }
+        for i in 0..n {
+            sc.rev_start[i + 1] += sc.rev_start[i];
+        }
+        sc.rev_from.resize(sc.edges.len(), 0);
+        // Al rellenar, `rev_start[v]` avanza del inicio al final del tramo de
+        // `v`, que coincide con el inicio del de `v + 1`.
+        for &(from, to) in &sc.edges {
+            sc.rev_from[sc.rev_start[to as usize] as usize] = from;
+            sc.rev_start[to as usize] += 1;
+        }
+        sc.queue.clear();
+        for u in 0..n {
+            let winner = sc.wins[u] == ep || self.goal_state == Some(u as u32);
+            if sc.seen[u] == ep && winner {
+                sc.good[u] = ep;
+                sc.queue.push(u as u32);
+            }
+        }
+        let mut head = 0;
+        while head < sc.queue.len() {
+            let v = sc.queue[head] as usize;
+            head += 1;
+            let begin = if v == 0 { 0 } else { sc.rev_start[v - 1] };
+            for k in begin..sc.rev_start[v] {
+                let u = sc.rev_from[k as usize] as usize;
+                if sc.good[u] != ep {
+                    sc.good[u] = ep;
+                    sc.queue.push(u as u32);
+                }
             }
         }
     }
@@ -445,6 +543,9 @@ impl Search<'_> {
         let ti = idx(to.0, to.1) as usize;
         let nd = self.current + cost;
         let sc = &mut *self.sc;
+        if from != u32::MAX {
+            sc.edges.push((from, ti as u32));
+        }
         if sc.seen[ti] != sc.epoch || nd < sc.dist[ti] {
             sc.seen[ti] = sc.epoch;
             sc.dist[ti] = nd;
@@ -478,10 +579,11 @@ impl Search<'_> {
         let level = self.level;
         let (ux, uy) = ((u as usize / HEIGHT) as i32, (u as usize % HEIGHT) as i32);
         self.max_x = self.max_x.max(ux);
+        self.from = u;
         if (ux, uy) == self.goal && self.goal_state.is_none() {
             self.goal_state = Some(u);
         }
-        self.touch(ux, uy);
+        self.touch(ux, uy, (ux, uy));
 
         // 1. Caminar (y caer).
         for dx in [-1, 1] {
@@ -501,7 +603,7 @@ impl Search<'_> {
                 }
             }) {
                 for &(x, y) in &visited[..nv] {
-                    self.touch(x, y);
+                    self.touch(x, y, to);
                 }
                 self.relax(to, STEP_COST, u, Move::Walk);
             }
@@ -538,7 +640,7 @@ impl Search<'_> {
                 && to != (ux, uy)
             {
                 for &(x, y) in &buf[..n] {
-                    self.touch(x, y);
+                    self.touch(x, y, to);
                 }
                 self.relax(to, jump_cost(to.0 - ux), u, Move::Jump(ai as u16));
             }
@@ -550,8 +652,18 @@ impl Search<'_> {
         let sc = &*self.sc;
         let ep = sc.epoch;
         let (gx, gy) = self.goal;
+        // Una moneda cuenta si algún movimiento que la toca acaba en un estado
+        // desde el que aún se llega a la meta.
+        let mut safe: Vec<u32> = sc
+            .coin_hits
+            .iter()
+            .filter(|&&(_, to)| sc.good[to as usize] == ep)
+            .map(|&(cell, _)| cell)
+            .collect();
+        safe.sort_unstable();
+        safe.dedup();
         let mut res = PlayResult {
-            reachable_coins: self.coins,
+            reachable_coins: safe.len() as u32,
             progress: if gx > s0.0 {
                 (f64::from(self.max_x - s0.0) / f64::from(gx - s0.0)).clamp(0.0, 1.0)
             } else {
@@ -578,6 +690,12 @@ impl Search<'_> {
         };
         res.solvable = true;
         res.progress = 1.0;
+        let (reached, trapped) = (0..sc.seen.len())
+            .filter(|&u| sc.seen[u] == ep)
+            .fold((0_u32, 0_u32), |(r, t), u| {
+                (r + 1, t + u32::from(sc.good[u] != ep))
+            });
+        res.trapped = f64::from(trapped) / f64::from(reached.max(1));
         let mut cur = t;
         while cur != u32::MAX {
             res.path
@@ -631,6 +749,43 @@ mod tests {
 
     fn check(l: &Level) -> PlayResult {
         Checker::default().check(l, &mut PlayScratch::default())
+    }
+
+    #[test]
+    fn moneda_en_pozo_sin_salida_no_cuenta() {
+        // Pozo de 5 filas (más que la altura de salto): quien cae no sale.
+        let pozo = lvl(&[
+            "------------",
+            "-@--------!-",
+            "XXXX-XXXXXXX",
+            "XXXX-XXXXXXX",
+            "XXXX-XXXXXXX",
+            "XXXXoXXXXXXX",
+            "XXXXXXXXXXXX",
+        ]);
+        let r = check(&pozo);
+        assert!(r.solvable);
+        assert_eq!(r.reachable_coins, 0);
+        assert!(r.trapped > 0.0);
+        let mut limpio = pozo.clone();
+        Checker::default().remove_trapped_coins(&mut limpio);
+        assert!(!limpio.tiles().contains(&Tile::Coin));
+        // La misma moneda sobre el suelo sí cuenta y no hay trampas.
+        let llano = lvl(&["-@--o-----!-", "XXXXXXXXXXXX"]);
+        let r = check(&llano);
+        assert_eq!(r.reachable_coins, 1);
+        assert_eq!(r.trapped, 0.0);
+    }
+
+    #[test]
+    fn zona_de_patrulla_mata() {
+        // Dos enemigos a 3 columnas: sus zonas de patrulla se tocan y cubren
+        // 6 columnas, más que el salto.
+        let juntos = lvl(&["-@---E--E-----!-", "XXXXXXXXXXXXXXXX"]);
+        assert!(!check(&juntos).solvable);
+        // A 5 columnas queda hueco para aterrizar entre ellos.
+        let separados = lvl(&["-@---E----E-----!-", "XXXXXXXXXXXXXXXXXX"]);
+        assert!(check(&separados).solvable);
     }
 
     #[test]

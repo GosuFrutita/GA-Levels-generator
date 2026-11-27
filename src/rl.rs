@@ -110,7 +110,9 @@ pub const STEP_PENALTY: f64 = -0.01;
 
 impl<'a> Env<'a> {
     /// Crea el entorno; `None` si el nivel no tiene salida o meta válidas.
-    pub fn new(level: Level, checker: &'a Checker, actions: &'a [Action]) -> Option<Self> {
+    pub fn new(level: &Level, checker: &'a Checker, actions: &'a [Action]) -> Option<Self> {
+        // Misma física que el verificador: las zonas de patrulla matan.
+        let level = level.with_patrols();
         let s = level.start()?;
         let g = level.goal()?;
         let start = Checker::fall(&level, s.0 as i32, s.1 as i32, |_, _| {})?;
@@ -309,7 +311,7 @@ impl Agent {
         rng: &mut Rng,
         greedy: bool,
     ) -> (bool, f64, usize) {
-        let Some(mut env) = Env::new(level.clone(), checker, actions) else {
+        let Some(mut env) = Env::new(level, checker, actions) else {
             return (false, 0.0, 0);
         };
         let mut tape = self.net.tape();
@@ -330,7 +332,7 @@ impl Agent {
     ) -> (Vec<(usize, usize)>, bool) {
         let actions = action_table(checker);
         let mut out = Vec::new();
-        let Some(mut env) = Env::new(level.clone(), checker, &actions) else {
+        let Some(mut env) = Env::new(level, checker, &actions) else {
             return (out, false);
         };
         let mut tape = self.net.tape();
@@ -544,7 +546,7 @@ impl<'a> Trainer<'a> {
     fn spawn(&mut self) -> Env<'a> {
         loop {
             let level = self.next_level();
-            if let Some(e) = Env::new(level, self.checker, self.actions) {
+            if let Some(e) = Env::new(&level, self.checker, self.actions) {
                 return e;
             }
         }
@@ -836,7 +838,7 @@ mod tests {
         let actions = action_table(&checker);
         assert_eq!(actions.len(), ACTIONS);
         let l = flat(20, Some(8));
-        let mut env = Env::new(l.clone(), &checker, &actions).expect("válido");
+        let mut env = Env::new(&l, &checker, &actions).expect("válido");
         // Caminar a la derecha hasta el borde del hueco.
         while env.pos.0 < 7 {
             assert!(!env.step(1).done);
@@ -845,7 +847,7 @@ mod tests {
         let s = env.step(1);
         assert!(s.done && env.died && s.reward < -0.9);
         // Saltar el hueco y llegar a la meta.
-        let mut env = Env::new(l.clone(), &checker, &actions).expect("válido");
+        let mut env = Env::new(&l, &checker, &actions).expect("válido");
         while env.pos.0 < 7 {
             env.step(1);
         }

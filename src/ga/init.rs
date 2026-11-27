@@ -72,8 +72,32 @@ pub fn repair(level: &mut Level, full: bool) {
                 }
             }
         }
+        space_enemies(level);
     }
     write_safe_zones(level);
+}
+
+/// Separación mínima entre dos enemigos de la misma fila. Cada uno patrulla una
+/// casilla a cada lado, así que con 5 columnas quedan 2 libres entre sus zonas
+/// para aterrizar entre ellos.
+pub const ENEMY_SPACING: usize = 5;
+
+/// Quita los enemigos demasiado pegados a otro de su fila (de izquierda a
+/// derecha se conserva el primero): las filas compactas cierran el paso.
+fn space_enemies(level: &mut Level) {
+    let mut last = [None::<usize>; HEIGHT];
+    for x in SAFE_COLS..level.width() - SAFE_COLS {
+        for (y, prev) in last.iter_mut().enumerate() {
+            if level.get(x, y) != Tile::Enemy {
+                continue;
+            }
+            if prev.is_some_and(|p| x - p < ENEMY_SPACING) {
+                level.set(x, y, Tile::Empty);
+            } else {
+                *prev = Some(x);
+            }
+        }
+    }
 }
 
 /// Repara las escaleras: elimina los tramos que no apoyan en algo sólido,

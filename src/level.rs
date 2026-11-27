@@ -253,6 +253,29 @@ impl Level {
         }
     }
 
+    /// Copia del nivel con la zona de patrulla de cada enemigo marcada como
+    /// enemigo: en el juego cada uno se mueve una casilla a cada lado si está
+    /// libre y tiene apoyo, así que esas celdas también matan. La física del
+    /// verificador y del agente trabaja sobre esta copia.
+    #[must_use]
+    pub fn with_patrols(&self) -> Self {
+        let mut out = self.clone();
+        for x in 0..self.width {
+            for y in 0..HEIGHT {
+                if self.get(x, y) != Tile::Enemy {
+                    continue;
+                }
+                for nx in [x.wrapping_sub(1), x + 1] {
+                    let free = nx < self.width && self.get(nx, y).is_passable();
+                    if free && self.get_or_empty(nx as i32, y as i32 + 1).is_support() {
+                        out.set(nx, y, Tile::Enemy);
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Escribe el tile en `(x, y)`.
     ///
     /// # Panics

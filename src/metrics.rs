@@ -65,8 +65,10 @@ pub struct Features {
     pub tiers: u32,
     /// Violaciones locales de coherencia.
     pub violations: u32,
-    /// Monedas no alcanzables.
+    /// Monedas no alcanzables o que solo se recogen cayendo en un callejón sin salida.
     pub unreachable_coins: u32,
+    /// Fracción de posiciones alcanzables sin camino a la meta (callejones).
+    pub trapped: f64,
     /// Fracción de plataformas y escaleras que el jugador nunca puede tocar.
     pub unreachable_structure: f64,
     /// Celdas de plataforma alcanzables.
@@ -419,6 +421,7 @@ impl Features {
             tiers: design.tiers,
             violations: violations(level),
             unreachable_coins: counts[Tile::Coin as usize].saturating_sub(play.reachable_coins),
+            trapped: play.trapped,
             unreachable_structure: structure.0,
             reachable_platforms: structure.1,
             reachable_ladders: structure.2,
@@ -563,8 +566,8 @@ pub fn style_fit(f: &Features, style: Style) -> f64 {
         / terms.len() as f64
 }
 
-/// Coherencia `C ∈ [0, 1]`: reglas locales, estructura alcanzable, monedas
-/// alcanzables y encaje de estilo.
+/// Coherencia `C ∈ [0, 1]`: reglas locales, estructura alcanzable y sin
+/// callejones sin salida, monedas recogibles y encaje de estilo.
 pub fn coherence(f: &Features, style: Style) -> f64 {
     // Penalización que nunca se satura y que castiga desde la primera
     // violación. Historia: con un tope lineal (0 desde W/4 violaciones) el ruido
@@ -577,7 +580,9 @@ pub fn coherence(f: &Features, style: Style) -> f64 {
     } else {
         1.0 - f64::from(f.unreachable_coins) / f64::from(f.coins)
     };
-    let f_reach = 1.0 - f.unreachable_structure;
+    // Un callejón del que no se sale obliga a reiniciar: pesa tanto como la
+    // estructura inalcanzable.
+    let f_reach = (1.0 - f.unreachable_structure) * (1.0 - f.trapped);
     0.45 * f_rules + 0.25 * f_reach + 0.10 * f_coins + 0.20 * style_fit(f, style)
 }
 

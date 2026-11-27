@@ -4,7 +4,7 @@
 # variable (soltar el botón corta el salto), tiempo coyote y búfer de salto.
 # Los parámetros siguen a la física discreta del verificador de Rust: el salto
 # alcanza unas 3,2 casillas de altura y unas 4,2 de distancia a la misma
-# altura, así un nivel que el BFS declara jugable también se puede pasar.
+# altura, así un nivel que el verificador declara jugable también se puede pasar.
 #
 # Los niveles se generan con `nivelga generar` en un hilo mientras se juega,
 # de modo que siempre hay uno nuevo y distinto preparado. Cada partida se
@@ -59,10 +59,12 @@ var ticks := 0
 var muerto := 0
 var ganado := false
 var marcado := false
+var depuracion := false
 var anim := 0
 
 # Nodos.
 var capa_nivel: Node2D
+var capa_depuracion: Node2D
 var sprite_jugador: Sprite2D
 var sprite_bandera: Sprite2D
 var texturas_jugador: Array = []
@@ -115,6 +117,7 @@ func _configurar_controles() -> void:
 		"reiniciar": [KEY_R],
 		"siguiente": [KEY_N, KEY_ENTER],
 		"marcar": [KEY_F],
+		"depurar": [KEY_F3, KEY_TAB],
 		"salir": [KEY_ESCAPE],
 	}
 	for accion in mapa:
@@ -133,6 +136,11 @@ func _crear_nodos() -> void:
 	sprite_jugador.centered = false
 	sprite_jugador.z_index = 10
 	add_child(sprite_jugador)
+	capa_depuracion = Node2D.new()
+	capa_depuracion.z_index = 20
+	capa_depuracion.visible = false
+	capa_depuracion.draw.connect(_dibujar_depuracion)
+	add_child(capa_depuracion)
 	camara = Camera2D.new()
 	add_child(camara)
 	camara.make_current()
@@ -517,7 +525,11 @@ func _actualizar_vista() -> void:
 		numero_nivel, nivel["estilo"], ancho, m["dificultad"]
 	] + "Muertes %d · monedas %d/%d · %.1f s%s\n" % [
 		muertes, total_monedas - monedas.size(), total_monedas, ticks / 60.0, " · MARCADO" if marcado else ""
-	] + "←→ moverse · espacio saltar · ↑↓ escaleras · R reiniciar · N siguiente · F marcar · Esc salir"
+	] + "←→ moverse · espacio saltar · ↑↓ escaleras · R reiniciar · N siguiente · F marcar · F3 depurar · Esc salir"
+	if depuracion:
+		hud.text += "\nDepuración: blanco suelo · cian plataforma de un sentido · amarillo escalera\n" \
+			+ "rojo mata · naranja patrulla de enemigo · dorado moneda · verde meta · gris decoración · azul jugador"
+		capa_depuracion.queue_redraw()
 	if ganado and nivel_fijo == "" and not _siguiente_listo() and hilo != null:
 		aviso.text = "¡Nivel superado! Generando el siguiente..."
 
@@ -533,6 +545,9 @@ func _unhandled_input(ev: InputEvent) -> void:
 		_reaparecer()
 	elif ev.is_action_pressed("marcar"):
 		_marcar()
+	elif ev.is_action_pressed("depurar"):
+		depuracion = not depuracion
+		capa_depuracion.visible = depuracion
 	elif ev.is_action_pressed("siguiente"):
 		_pasar_al_siguiente()
 
@@ -560,6 +575,34 @@ func _pasar_al_siguiente_esperando() -> void:
 	_cargar(siguiente)
 	siguiente = ""
 	_preparar_siguiente()
+
+
+# Contorno de colores por tipo de celda con las cajas de colisión reales: así
+# se ve qué es suelo, qué mata y qué es solo decoración.
+func _dibujar_depuracion() -> void:
+	var c := capa_depuracion
+	var colores := {
+		"X": Color(1, 1, 1, 0.9), "L": Color(1, 0.9, 0.2, 0.9),
+		"o": Color(1, 0.75, 0.1, 0.9), "!": Color(0.2, 1, 0.3, 0.9), "d": Color(0.6, 0.6, 0.6, 0.7),
+	}
+	for y in alto:
+		for x in ancho:
+			var t := _tile(x, y)
+			var r := Rect2(x * T, y * T, T, T)
+			if t == "S":
+				c.draw_rect(r, Color(0.2, 0.9, 1, 0.5), false, 1.0)
+				c.draw_line(r.position, r.position + Vector2(T, 0), Color(0.2, 0.9, 1), 3.0)
+			elif t == "^":
+				c.draw_rect(r.grow(-3.0), Color(1, 0.1, 0.1, 0.45), true)
+			elif t == "o" and not monedas.has(Vector2i(x, y)):
+				continue
+			elif colores.has(t):
+				c.draw_rect(r.grow(-0.5), colores[t], false, 1.0)
+	for e in enemigos:
+		var zona := Rect2(e["min"], e["y"], e["max"] - e["min"] + 14.0, 14.0)
+		c.draw_rect(zona, Color(1, 0.55, 0.1, 0.3), true)
+		c.draw_rect(Rect2(e["x"], e["y"] + 2.0, 14.0, 12.0), Color(1, 0.1, 0.1, 0.9), false, 1.5)
+	c.draw_rect(Rect2(px, py, ANCHO_J, ALTO_J), Color(0.3, 0.5, 1, 0.9), false, 1.5)
 
 
 # Guarda una copia del nivel para revisarlo después (algo que no está en orden).

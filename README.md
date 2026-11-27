@@ -48,8 +48,13 @@ cargo run --release -- partidas         # compara la dificultad D con tus partid
 Controles: flechas o A/D para moverse, espacio, Z o flecha arriba para saltar,
 flechas arriba y abajo en las escaleras, R reinicia, N o Enter pasa al
 siguiente nivel, F marca el nivel para revisarlo (se copia en
-`resultados/marcados/`) y Esc sale. Con la flecha abajo se baja de una
-plataforma de un solo sentido.
+`resultados/marcados/`), F3 o Tab activa el modo depuración y Esc sale. Con la
+flecha abajo se baja de una plataforma de un solo sentido.
+
+El modo depuración dibuja el contorno de cada celda según su tipo (suelo,
+plataforma de un sentido, escalera, peligro, moneda, meta y decoración sin
+colisión), la caja de choque de cada enemigo con su zona de patrulla y la caja
+del jugador.
 
 Godot solo se usa para jugar: la generación, las métricas y el aprendizaje
 siguen hechos a mano en Rust. El script busca el ejecutable en la variable

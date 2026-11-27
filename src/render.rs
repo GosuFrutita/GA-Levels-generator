@@ -210,10 +210,21 @@ fn skin(style: Style) -> Skin {
             ladder_top: Spr(Base, 51),
             ladder: Spr(Base, 71),
             hazard: &[Spr(Base, 68)],
-            coin: &[Spr(Farm, 4), Spr(Farm, 72)],
-            decor: &[Spr(Farm, 20), Spr(Farm, 57), Spr(Farm, 58), Spr(Farm, 43)],
+            // La expansión no trae coleccionables: la calabaza y el brote son
+            // adornos de suelo y se usan como decoración.
+            coin: &[Spr(Base, 151)],
+            decor: &[
+                Spr(Farm, 20),
+                Spr(Farm, 57),
+                Spr(Farm, 58),
+                Spr(Farm, 43),
+                Spr(Farm, 4),
+                Spr(Farm, 72),
+            ],
             enemy: Spr(Characters, 24),
-            background: [6, 14, 22],
+            // El fondo verde dejaba ver por los huecos una franja oscura que se
+            // leía como un río de ácido: cielo claro con pinos.
+            background: [3, 11, 19],
         },
         Style::Food => Skin {
             ground_single: e4(Food, 4, 5, 6, 7),
@@ -227,7 +238,7 @@ fn skin(style: Style) -> Skin {
             coin: &[Spr(Food, 13), Spr(Food, 14), Spr(Food, 15)],
             decor: &[Spr(Food, 42), Spr(Food, 43), Spr(Food, 106), Spr(Food, 107)],
             enemy: Spr(Characters, 13),
-            background: [2, 11, 18],
+            background: [2, 10, 18],
         },
         Style::Industrial => Skin {
             ground_single: e4(Industrial, 0, 1, 2, 3),

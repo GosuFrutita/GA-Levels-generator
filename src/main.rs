@@ -619,7 +619,6 @@ fn clock_seed() -> u64 {
 fn level_json(
     level: &Level,
     e: &nivelga::fitness::Evaluation,
-    traj: &[(usize, usize)],
     assets: &std::path::Path,
     background: &str,
     (seed, target, seconds): (u64, f64, f64),
@@ -650,7 +649,15 @@ fn level_json(
         .with("enemigos", f.enemies)
         .with("peligros", f.hazards)
         .with("huecos", f.gaps)
-        .with("monedas", f.coins)
+        // Se cuentan en el nivel final: `generar` quita las monedas trampa.
+        .with(
+            "monedas",
+            level
+                .tiles()
+                .iter()
+                .filter(|&&t| t == nivelga::level::Tile::Coin)
+                .count(),
+        )
         .with("escaleras", f.ladders)
         .with("linealidad", f.linearity)
         .with("leniencia", f.leniency);
@@ -678,10 +685,6 @@ fn level_json(
         .with("segundos_generacion", seconds)
         .with("fondo", background)
         .with("filas", rows)
-        .with(
-            "trayectoria",
-            Json::Arr(traj.iter().map(|&(x, y)| Json::from(vec![x, y])).collect()),
-        )
         .with("metricas", metrics)
         .with("sprites", sprites)
 }
@@ -744,9 +747,9 @@ fn generar(mut args: Args) -> Result<()> {
         cfg.seed = seed.wrapping_add(k);
         result = ga::run(&cfg, &checker, ext.extras(), |_, _, _| {});
     }
-    let level = &result.best;
-    let play = checker.check(level, &mut PlayScratch::default());
-    let traj = checker.trajectory(level, &play);
+    let mut best = result.best.clone();
+    checker.remove_trapped_coins(&mut best);
+    let level = &best;
     std::fs::create_dir_all(&out)?;
     let sets = Tilesets::load(&assets)?;
     let bg_path = out.join("fondo.png");
@@ -757,9 +760,8 @@ fn generar(mut args: Args) -> Result<()> {
             .map_or_else(|_| p.display().to_string(), |a| a.display().to_string())
     };
     let doc = level_json(
-        &result.best,
+        level,
         &result.best_eval,
-        &traj,
         &assets,
         &abs(&bg_path),
         (seed, target, t0.elapsed().as_secs_f64()),
@@ -782,8 +784,6 @@ fn exportar(mut args: Args) -> Result<()> {
     let checker = Checker::default();
     let cfg = nivelga::fitness::FitnessConfig::default();
     let e = nivelga::fitness::Evaluator::new(&checker, &cfg).evaluate(&level, Extras::default());
-    let play = checker.check(&level, &mut PlayScratch::default());
-    let traj = checker.trajectory(&level, &play);
     std::fs::create_dir_all(&out)?;
     let bg = out.join("fondo.png");
     nivelga::image::png::save(
@@ -794,7 +794,6 @@ fn exportar(mut args: Args) -> Result<()> {
     let doc = level_json(
         &level,
         &e,
-        &traj,
         &assets,
         &bg_abs,
         (0, cfg.targets.difficulty, 0.0),

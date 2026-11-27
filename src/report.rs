@@ -68,8 +68,8 @@ pub fn describe(e: &Evaluation) -> String {
     let f = &e.features;
     format!(
         "F={:.4} jugable={} Q={:.3} D={:.3} (f_dif={:.3}) V={:.3} C={:.3} estilo_fit={:.3} nat={:.3}\n\
-         enemigos={} peligros={} huecos={} (máx {}) saltos={} (ajustados {}) monedas={} escaleras={} \
-         plataformas={} deco={} violaciones={} inalcanzable={:.0}% linealidad={:.2} leniencia={:.2} patrones={:.3} entropía={:.3}",
+         enemigos={} peligros={} huecos={} (máx {}) saltos={} (ajustados {}) monedas={} (trampa {}) escaleras={} \
+         plataformas={} deco={} violaciones={} inalcanzable={:.0}% callejones={:.0}% linealidad={:.2} leniencia={:.2} patrones={:.3} entropía={:.3}",
         e.fitness,
         if e.feasible { "sí" } else { "no" },
         e.quality,
@@ -86,11 +86,13 @@ pub fn describe(e: &Evaluation) -> String {
         f.jumps,
         f.tight_jumps,
         f.coins,
+        f.unreachable_coins,
         f.ladders,
         f.platforms,
         f.decor,
         f.violations,
         100.0 * f.unreachable_structure,
+        100.0 * f.trapped,
         f.linearity,
         f.leniency,
         f.pattern_ratio,

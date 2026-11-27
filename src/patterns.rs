@@ -209,11 +209,11 @@ pub const fn max_width(kind: Kind) -> usize {
         Kind::Rest | Kind::Enemy => 6,
         Kind::Gap | Kind::Spikes => 8,
         // La escalera de mano cae a escalones si no hay altura para ella.
-        Kind::Mesa | Kind::Horde | Kind::Stairs | Kind::LadderShaft => 12,
+        Kind::Mesa | Kind::Stairs | Kind::LadderShaft => 12,
         Kind::PillarGap => 18,
         Kind::Trench => 9,
         Kind::Bridge | Kind::TwoPath | Kind::MultiGap => 13,
-        Kind::Chain => 16,
+        Kind::Chain | Kind::Horde => 16,
     }
 }
 
@@ -405,10 +405,12 @@ fn build_horde(
     } else {
         2 + usize::from(hard(rng, difficulty))
     };
-    let w = 3 + 3 * n;
+    // Separados lo justo para aterrizar entre sus zonas de patrulla.
+    let step = crate::ga::init::ENEMY_SPACING;
+    let w = 4 + step * (n - 1) + 2;
     flat(level, x0, w, g, rng);
     for i in 0..n {
-        set(level, x0 + 2 + 3 * i, g - 1, Tile::Enemy);
+        set(level, x0 + 2 + step * i, g - 1, Tile::Enemy);
     }
     Built { width: w, exit: g }
 }
@@ -811,23 +813,31 @@ pub fn detect(level: &Level) -> Vec<Found> {
             }
         }
     }
-    let group = |xs: &[usize], single: Kind, many: Option<Kind>, out: &mut Vec<Found>| {
-        let mut i = 0;
-        while i < xs.len() {
-            let mut j = i;
-            while j + 1 < xs.len() && xs[j + 1] - xs[j] <= 4 {
-                j += 1;
+    // Elementos a menos de `reach` columnas forman un mismo grupo.
+    let group =
+        |xs: &[usize], reach: usize, single: Kind, many: Option<Kind>, out: &mut Vec<Found>| {
+            let mut i = 0;
+            while i < xs.len() {
+                let mut j = i;
+                while j + 1 < xs.len() && xs[j + 1] - xs[j] <= reach {
+                    j += 1;
+                }
+                let kind = match many {
+                    Some(m) if j > i => m,
+                    _ => single,
+                };
+                out.push(Found { kind, x: xs[i] });
+                i = j + 1;
             }
-            let kind = match many {
-                Some(m) if j > i => m,
-                _ => single,
-            };
-            out.push(Found { kind, x: xs[i] });
-            i = j + 1;
-        }
-    };
-    group(&enemy_x, Kind::Enemy, Some(Kind::Horde), &mut out);
-    group(&spike_x, Kind::Spikes, None, &mut out);
+        };
+    group(
+        &enemy_x,
+        crate::ga::init::ENEMY_SPACING + 1,
+        Kind::Enemy,
+        Some(Kind::Horde),
+        &mut out,
+    );
+    group(&spike_x, 4, Kind::Spikes, None, &mut out);
 
     // Plataformas: cadenas (≥ 2 tramos encadenados a distinta fila) y dobles
     // rutas (tramo ≥ 4 sobre suelo transitable).
