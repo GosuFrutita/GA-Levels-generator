@@ -110,6 +110,9 @@ pub struct GaConfig {
     pub niching: Niching,
     /// Estilo fijo (sin evolucionar el gen de tileset); `None` = lo elige el GA.
     pub fixed_style: Option<Style>,
+    /// Población inicial de ruido (tiles al azar) en vez del generador de
+    /// patrones, para ver la evolución desde cero.
+    pub noise_init: bool,
     /// Hilos para la evaluación (0 = automático).
     pub threads: usize,
     /// Configuración de la aptitud.
@@ -134,6 +137,7 @@ impl Default for GaConfig {
             operator_control: OperatorControl::Uniform,
             niching: Niching::None,
             fixed_style: None,
+            noise_init: false,
             threads: 0,
             fitness: FitnessConfig::default(),
         }
@@ -535,11 +539,16 @@ impl Engine<'_> {
     }
 }
 
-/// Población inicial con el generador constructivo (y el estilo fijo, si lo hay).
+/// Población inicial con el generador constructivo o de ruido (y el estilo
+/// fijo, si lo hay).
 fn initial_population(cfg: &GaConfig, rng: &mut Rng) -> Vec<Level> {
     (0..cfg.population)
         .map(|_| {
-            let mut l = init::random_level(cfg.width, rng);
+            let mut l = if cfg.noise_init {
+                init::noise_level(cfg.width, rng)
+            } else {
+                init::random_level(cfg.width, rng)
+            };
             if let Some(st) = cfg.fixed_style {
                 l.style = st;
             }

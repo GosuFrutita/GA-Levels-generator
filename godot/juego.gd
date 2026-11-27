@@ -9,8 +9,9 @@
 # Al empezar se elige el modo. En el infinito los niveles se generan con
 # `nivelga generar` en un hilo mientras se juega, de modo que siempre hay uno
 # nuevo y distinto preparado. En el de evolución se juega una misma ejecución
-# del GA etapa a etapa: un individuo típico de la población inicial y el mejor
-# de varias generaciones hasta la última. Cada partida se
+# del GA etapa a etapa: parte de una población de ruido (tiles al azar) y
+# muestra un individuo típico de ella y el mejor de varias generaciones hasta
+# la última. Cada partida se
 # registra en resultados/partidas.csv para comparar la dificultad medida (D)
 # con la experiencia real de quien juega.
 extends Node2D
@@ -118,7 +119,7 @@ func _mostrar_menu() -> void:
 	capa_depuracion.visible = false
 	hud.text = ""
 	aviso.text = "Elige un modo:\n\n1  Infinito: un nivel nuevo y distinto tras otro\n" \
-		+ "2  Evolución: una ejecución del GA, del nivel inicial al final\n\nEsc salir"
+		+ "2  Evolución: una ejecución del GA, desde ruido puro hasta el nivel final\n\nEsc salir"
 
 
 func _empezar_infinito() -> void:
@@ -140,7 +141,7 @@ func _empezar_infinito() -> void:
 
 func _empezar_evolucion() -> void:
 	modo = "evolucion"
-	aviso.text = "Evolucionando niveles con el GA..."
+	aviso.text = "Evolucionando niveles desde ruido con el GA (unos segundos)..."
 	await get_tree().process_frame
 	etapas = _generar(_nuevo_destino(), true)
 	if etapas.is_empty():

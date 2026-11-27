@@ -22,8 +22,9 @@ USO:
   nivelga dibujar <nivel.txt> <salida.png> [--escala 2]
   nivelga comprobar <nivel.txt>       analiza jugabilidad y métricas
   nivelga generar [--salida DIR] [--semilla N] [--ancho W] [--dificultad D]
-                  [--estilo azar|libre|pradera|granja|dulce|industrial]
-                                      evoluciona un nivel nuevo para el juego (JSON + PNG)
+                  [--estilo azar|libre|pradera|granja|dulce|industrial] [--evolucion]
+                                      evoluciona un nivel nuevo para el juego (JSON + PNG);
+                                      con --evolucion parte de ruido y guarda cada etapa
   nivelga exportar <nivel.txt> [--salida DIR]
                                       convierte un nivel en texto al formato del juego
   nivelga corpus [--datos data/vglc/smb]
@@ -713,9 +714,12 @@ fn generar(mut args: Args) -> Result<()> {
                 .ok_or_else(|| Error::Config(format!("estilo desconocido «{n}»")))?,
         ),
     };
-    let generations = args.get("generaciones", 80_usize)?;
-    let population = args.get("poblacion", 60_usize)?;
+    // El modo evolución parte de ruido y necesita más búsqueda para llegar a
+    // un nivel final tan bueno como el del modo normal.
     let evolution = args.flag("evolucion", false)?;
+    let (generations, population) = if evolution { (400, 100) } else { (80, 60) };
+    let generations = args.get("generaciones", generations)?;
+    let population = args.get("poblacion", population)?;
     let out = PathBuf::from(
         args.take("salida")
             .unwrap_or_else(|| "resultados/juego/actual".into()),
@@ -732,6 +736,7 @@ fn generar(mut args: Args) -> Result<()> {
         population,
         niching: ga::Niching::CrowdingSelective,
         fixed_style,
+        noise_init: evolution,
         threads: 1,
         ..ga::GaConfig::default()
     };
@@ -740,7 +745,7 @@ fn generar(mut args: Args) -> Result<()> {
         cfg.fitness.weights.naturalness = 0.15;
     }
     // Generaciones de las que se guarda el mejor en el modo evolución: la
-    // inicial y 1/16, 1/8, 1/4, 1/2 y el total (0, 5, 10, 20, 40 y 80).
+    // inicial y 1/16, 1/8, 1/4, 1/2 y el total (0, 25, 50, 100, 200 y 400).
     let marks: Vec<usize> = std::iter::once(0)
         .chain([16, 8, 4, 2, 1].map(|d| generations / d))
         .collect();
@@ -754,10 +759,11 @@ fn generar(mut args: Args) -> Result<()> {
         if st.generation == 0 {
             // Cada ejecución (también los reintentos) empieza su serie de cero.
             snapshots.clear();
-            // Material de partida: un individuo típico (aptitud mediana).
+            // Material de partida: un individuo típico (aptitud mediana) de
+            // la población de ruido.
             let k = order[order.len() / 2];
             snapshots.push((
-                "población inicial, individuo típico".into(),
+                "población inicial de ruido, individuo típico".into(),
                 pop[k].clone(),
                 evals[k].clone(),
             ));

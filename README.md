@@ -47,9 +47,11 @@ cargo run --release -- partidas         # compara la dificultad D con tus partid
 
 Al empezar se elige el modo. El **infinito** genera un nivel nuevo y distinto
 tras otro. El de **evolución** juega una misma ejecución del GA etapa a etapa:
-un individuo típico de la población inicial y después el mejor de las
-generaciones 0, 5, 10, 20, 40 y 80, con su aptitud en pantalla. Los niveles se
-muestran tal como los dejó el GA. Por debajo usa
+la población inicial es ruido puro (cada celda es un tile al azar) y se juega
+un individuo típico de ella y después el mejor de las generaciones 0, 25, 50,
+100, 200 y 400, con su aptitud en pantalla. Las primeras etapas suelen ser
+injugables (N pasa a la siguiente) y la última es un nivel diseñado. Los
+niveles se muestran tal como los dejó el GA. Por debajo usa
 `nivelga generar --evolucion`, que escribe una carpeta por etapa.
 
 Controles: flechas o A/D para moverse, espacio, Z o flecha arriba para saltar,

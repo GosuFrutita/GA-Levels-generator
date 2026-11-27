@@ -206,6 +206,20 @@ pub fn random_level(width: usize, rng: &mut Rng) -> Level {
     l
 }
 
+/// Genera un nivel de ruido: cada celda recibe un tile evolucionable al azar
+/// y solo se escriben las zonas fijas de salida y meta. No tiene estructura
+/// ni reparación; es el punto de partida del modo evolución del juego.
+pub fn noise_level(width: usize, rng: &mut Rng) -> Level {
+    let mut l = Level::empty(width, Style::ALL[rng.index(Style::COUNT)]);
+    for x in SAFE_COLS..width - SAFE_COLS {
+        for y in 0..HEIGHT {
+            l.set(x, y, Tile::EVOLVABLE[rng.index(Tile::EVOLVABLE.len())]);
+        }
+    }
+    write_safe_zones(&mut l);
+    l
+}
+
 /// Recorta la ventana de columnas `[x0, x0 + width)` de un nivel y la
 /// convierte en un nivel completo (con sus zonas de salida y meta).
 ///
@@ -227,8 +241,12 @@ pub(crate) mod tests {
     #[test]
     fn zonas_fijas_y_unica_salida_meta() {
         let mut rng = Rng::seed_from_u64(1);
-        for _ in 0..50 {
-            let l = random_level(80, &mut rng);
+        for k in 0..50 {
+            let l = if k % 2 == 0 {
+                random_level(80, &mut rng)
+            } else {
+                noise_level(80, &mut rng)
+            };
             assert_eq!(l.tiles().iter().filter(|&&t| t == Tile::Start).count(), 1);
             assert_eq!(l.tiles().iter().filter(|&&t| t == Tile::Goal).count(), 1);
             assert_eq!(l.start(), Some((1, SAFE_GROUND - 1)));
